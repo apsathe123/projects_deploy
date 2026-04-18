@@ -22,6 +22,7 @@ from engine import (
     high_interest_debt,
     job_loss_buffer_months,
     monthly_surplus,
+    personal_finance_playbook,
     retirement_summary,
     risk_profile_from_score,
     score_label,
@@ -183,6 +184,8 @@ def ensure_defaults():
         "current_step": 0,
         "last_added": -1,
         "confirm_remove_goal": None,
+        "reading_theme": "System",
+        "text_size": "Comfortable",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -190,26 +193,112 @@ def ensure_defaults():
 
 
 def inject_css(theme: str, font_size: str):
-    font_scale = {"Comfortable": "1rem", "Large": "1.08rem", "Extra large": "1.16rem"}[font_size]
-    theme_class = {"System": "theme-system", "Light": "theme-light", "Dark": "theme-dark", "Sepia": "theme-sepia"}[theme]
+    font_scale = {"Comfortable": "1rem", "Large": "1.08rem", "Extra large": "1.16rem"}.get(font_size, "1rem")
+    themes = {
+        "System": {
+            "scheme": "normal",
+            "bg": "transparent",
+            "surface": "transparent",
+            "text": "inherit",
+            "muted": "#64748b",
+            "border": "rgba(148, 163, 184, 0.24)",
+        },
+        "Light": {
+            "scheme": "light",
+            "bg": "#fafafa",
+            "surface": "#ffffff",
+            "text": "#111827",
+            "muted": "#64748b",
+            "border": "rgba(15, 23, 42, 0.14)",
+        },
+        "Dark": {
+            "scheme": "dark",
+            "bg": "#111827",
+            "surface": "#1f2937",
+            "text": "#f9fafb",
+            "muted": "#cbd5e1",
+            "border": "rgba(226, 232, 240, 0.20)",
+        },
+        "Sepia": {
+            "scheme": "light",
+            "bg": "#f8f1e3",
+            "surface": "#fffaf0",
+            "text": "#241f18",
+            "muted": "#725f46",
+            "border": "rgba(112, 84, 48, 0.22)",
+        },
+    }
+    palette = themes.get(theme, themes["System"])
+    themed_surface_css = ""
+    if theme != "System":
+        themed_surface_css = f"""
+        .stApp,
+        [data-testid="stAppViewContainer"] {{
+            background: {palette["bg"]};
+            color: {palette["text"]};
+        }}
+        [data-testid="stSidebar"],
+        [data-testid="stSidebarContent"] {{
+            background: {palette["surface"]};
+            color: {palette["text"]};
+        }}
+        .stApp p,
+        .stApp li,
+        .stApp label,
+        .stApp span,
+        .stApp h1,
+        .stApp h2,
+        .stApp h3,
+        .stApp h4,
+        .stApp h5,
+        .stApp h6,
+        [data-testid="stSidebar"] p,
+        [data-testid="stSidebar"] label,
+        [data-testid="stSidebar"] span {{
+            color: {palette["text"]};
+        }}
+        .stApp input,
+        .stApp textarea,
+        .stApp [data-baseweb="select"] > div {{
+            background-color: {palette["surface"]};
+            color: {palette["text"]};
+            border-color: {palette["border"]};
+        }}
+        """
     st.markdown(
         f"""
         <style>
         :root {{
+            color-scheme: {palette["scheme"]};
+            --pfp-font-size: {font_scale};
             --pfp-good: #166534;
             --pfp-warn: #a16207;
             --pfp-bad: #b91c1c;
-            --pfp-muted: #64748b;
-            --pfp-track: rgba(148, 163, 184, 0.24);
+            --pfp-muted: {palette["muted"]};
+            --pfp-track: {palette["border"]};
             --pfp-equity: #2563eb;
             --pfp-debt: #16a34a;
             --pfp-gold: #ca8a04;
             --pfp-cash: #64748b;
         }}
-        .stApp {{ font-size: {font_scale}; }}
-        .theme-light {{ color-scheme: light; }}
-        .theme-dark {{ color-scheme: dark; }}
-        .theme-sepia .stApp {{ background: #f8f1e3; color: #241f18; }}
+        .stApp,
+        [data-testid="stSidebar"] {{
+            font-size: var(--pfp-font-size);
+        }}
+        .stApp [data-testid="stMarkdownContainer"] p,
+        .stApp [data-testid="stMarkdownContainer"] li,
+        .stApp label,
+        .stApp input,
+        .stApp textarea,
+        .stApp button,
+        .stApp [data-baseweb="select"] span,
+        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
+        [data-testid="stSidebar"] label,
+        [data-testid="stSidebar"] button,
+        [data-testid="stSidebar"] [data-baseweb="select"] span {{
+            font-size: var(--pfp-font-size) !important;
+        }}
+        {themed_surface_css}
         @media (prefers-color-scheme: dark) {{
             :root {{ --pfp-track: rgba(226, 232, 240, 0.20); }}
         }}
@@ -229,7 +318,6 @@ def inject_css(theme: str, font_size: str):
         .alloc-cash {{ background:var(--pfp-cash); }}
         .small-note {{ color:var(--pfp-muted); font-size:0.9rem; }}
         </style>
-        <div class="{theme_class}"></div>
         """,
         unsafe_allow_html=True,
     )
@@ -315,8 +403,8 @@ ensure_defaults()
 
 with st.sidebar:
     st.subheader("Planner Settings")
-    theme = st.selectbox("Reading theme", ["System", "Light", "Dark", "Sepia"], index=0)
-    font_size = st.selectbox("Text size", ["Comfortable", "Large", "Extra large"], index=0)
+    theme = st.selectbox("Reading theme", ["System", "Light", "Dark", "Sepia"], key="reading_theme")
+    font_size = st.selectbox("Text size", ["Comfortable", "Large", "Extra large"], key="text_size")
     st.divider()
     st.subheader("Steps")
     for i, step in enumerate(STEPS):
@@ -639,12 +727,14 @@ elif step == 6:
                 health = compute_health_score(profile)
                 gaps = gap_analysis(profile)
                 actions = action_plan(profile, recs, gaps)
+                playbook = personal_finance_playbook(profile, health, recs, gaps)
                 st.session_state.plan = {
                     "profile": profile,
                     "recs": recs,
                     "health": health,
                     "gaps": gaps,
                     "actions": actions,
+                    "playbook": playbook,
                 }
                 sync_query_params()
                 st.toast("Plan generated and URL state updated.")
@@ -656,6 +746,7 @@ elif step == 6:
         health = plan["health"]
         gaps = plan["gaps"]
         actions = plan["actions"]
+        playbook = plan.get("playbook") or personal_finance_playbook(profile, health, recs, gaps)
         surplus = monthly_surplus(profile)
         needed = total_monthly_needed(recs)
 
@@ -699,6 +790,28 @@ elif step == 6:
             for label_text, (key, _) in cats.items():
                 st.markdown(f"**{label_text}:** {health['details'][key]}")
 
+        st.subheader("Personal Finance Playbook")
+        personality = playbook["personality"]
+        st.info(f"**{personality['label']}** - {personality['summary']} {playbook['one_sentence']}")
+        with st.expander("Your money questions, answered", expanded=True):
+            for answer in playbook["answers"]:
+                st.markdown(f"- {answer}")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("**Tax-smart notes**")
+            for note in playbook["tax_notes"]:
+                st.markdown(f"- {note}")
+        with col2:
+            st.markdown("**Avoid for now**")
+            for item in playbook["avoid"]:
+                st.markdown(f"- {item}")
+
+        debt = playbook["debt_strategy"]
+        with st.expander("Debt strategy"):
+            st.write(debt["summary"])
+            for item in debt["items"]:
+                st.markdown(f"- {item}")
+
         st.subheader("30 / 60 / 90 Day Action Plan")
         for block in actions:
             with st.expander(block["period"], expanded=block["period"] == "Next 30 days"):
@@ -740,6 +853,23 @@ elif step == 6:
                         "Cash / Liquid": inr(split["cash"]),
                     }
                 )
+
+                guidance = rec.get("fund_category_guidance", {})
+                if guidance:
+                    st.markdown("**Fund category guidance**")
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.caption("Suitable")
+                        for item in guidance.get("suitable", []):
+                            st.markdown(f"- {item}")
+                    with col2:
+                        st.caption("Use caution")
+                        for item in guidance.get("use_caution", []):
+                            st.markdown(f"- {item}")
+                    with col3:
+                        st.caption("Avoid")
+                        for item in guidance.get("avoid", []):
+                            st.markdown(f"- {item}")
 
                 st.markdown("**Scenario outcomes at the same SIP**")
                 st.write(
@@ -800,7 +930,7 @@ elif step == 6:
         with st.spinner("Preparing PDF…"):
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
                 tmp_path = tmp.name
-            generate_pdf(profile, health, recs, gaps, tmp_path, actions)
+            generate_pdf(profile, health, recs, gaps, tmp_path, actions, playbook)
             with open(tmp_path, "rb") as f:
                 pdf_bytes = f.read()
             os.unlink(tmp_path)

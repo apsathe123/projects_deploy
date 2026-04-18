@@ -241,6 +241,7 @@ def goal_recommendations(p: UserProfile) -> list[dict]:
             "scenarios": scenario_values(monthly_needed, g.years, annual_return),
         }
         rec["tradeoffs"] = build_tradeoffs(rec, p)
+        rec["fund_category_guidance"] = fund_category_guidance(rec, p)
         recs.append(rec)
 
     return recs
@@ -248,6 +249,171 @@ def goal_recommendations(p: UserProfile) -> list[dict]:
 
 def total_monthly_needed(recs: list[dict]) -> float:
     return sum(r["monthly_needed"] for r in recs)
+
+
+def fund_category_guidance(rec: dict, p: UserProfile) -> dict:
+    years = rec["years"]
+    alloc = rec["allocation"]
+    suitable = []
+    cautious = []
+    avoid = []
+
+    if years < 3:
+        suitable.extend(["Liquid funds or overnight funds", "Bank FD or short-term deposit", "Ultra-short duration debt funds"])
+        if p.tax_regime == "old":
+            suitable.append("Tax-saving deposits only if lock-in matches the goal")
+        cautious.append("Arbitrage funds if you understand short-term volatility and exit loads")
+        avoid.extend(["Small-cap funds", "Sector or thematic funds", "Direct stocks", "Long-duration debt funds"])
+    elif years < 7:
+        suitable.extend(["Large-cap index funds", "Flexi-cap funds with a conservative debt mix", "Short-duration debt funds or PPF for the debt bucket"])
+        if alloc["gold"] > 0:
+            suitable.append("Gold ETF or gold fund for the gold bucket")
+        cautious.extend(["Large & mid-cap funds", "Small-cap exposure above a small satellite allocation"])
+        avoid.extend(["Single-stock bets for core goals", "Lock-ins that outlast the goal date"])
+    else:
+        suitable.extend(["Nifty 50 or broad-market index funds", "Flexi-cap funds", "Large & mid-cap funds", "PPF, EPF/VPF, or NPS for long-term debt allocation"])
+        if years >= 10 and p.risk_profile != "conservative":
+            cautious.append("Small-cap funds as a limited satellite allocation")
+        if alloc["gold"] > 0:
+            suitable.append("SGB if available at fair pricing, otherwise gold ETF or gold fund")
+        avoid.extend(["Market timing with core SIPs", "Concentrated sector funds as the main portfolio"])
+
+    return {"suitable": suitable, "use_caution": cautious, "avoid": avoid}
+
+
+def tax_smart_notes(p: UserProfile, recs: list[dict]) -> list[str]:
+    notes = [
+        f"Equity mutual fund gains need holding-period awareness. {TAX_NOTES['equity_ltcg']}",
+        f"Debt and FD choices should be compared after tax. {TAX_NOTES['debt_mf']}",
+    ]
+    if p.tax_regime == "new":
+        notes.append("New-regime users should treat ELSS, PPF, and NPS primarily as investment or retirement choices, not automatic deduction tools.")
+    else:
+        notes.append("Old-regime users should review 80C, 80D, HRA, LTA, and NPS room before the financial year closes.")
+    if any(r["years"] <= 3 for r in recs):
+        notes.append("Near-term goals should prioritise certainty and liquidity over tax optimisation.")
+    if any(r["allocation"]["gold"] > 0 for r in recs):
+        notes.append("Gold exposure should be sized as diversification; check liquidity, spreads, and tax treatment before choosing ETF, fund, or SGB.")
+    notes.append("At year-end, review tax harvesting only after brokerage, exit load, and your full capital-gains picture are clear.")
+    return notes
+
+
+def debt_strategy(p: UserProfile) -> dict:
+    income = total_monthly_income(p)
+    emis = total_monthly_emi(p)
+    emi_ratio = emis / income if income > 0 else 0
+    high_debt = high_interest_debt(p)
+    items = []
+
+    if not p.loans:
+        summary = "No active loans entered. Keep future EMIs below a comfortable share of income before adding new goals."
+        items.append("Avoid taking new debt for discretionary goals until the emergency fund is at least 3 months.")
+    elif high_debt > 0:
+        summary = "High-interest debt is the first money leak to close."
+        items.append(f"Prioritise repayment of about Rs.{high_debt:,.0f} before scaling low-priority equity SIPs.")
+        items.append("Use an avalanche order: highest interest rate first, while keeping minimum EMIs current on every loan.")
+    elif emi_ratio > 0.35:
+        summary = "EMIs are taking a large share of income, so flexibility is tight."
+        items.append("Pause new low-priority goals and reduce EMI pressure before increasing market risk.")
+    else:
+        summary = "Debt load looks manageable from the inputs provided."
+        items.append("Continue EMIs on schedule and compare any prepayment with goal SIP shortfalls.")
+
+    if p.loans:
+        items.append(f"Current EMI load is {emi_ratio:.0%} of monthly income.")
+    if any(l.annual_rate < 0.10 for l in p.loans):
+        items.append("For lower-rate home or education loans, compare prepayment with investing only after insurance and emergency fund are in place.")
+    return {"summary": summary, "items": items}
+
+
+def avoid_list(p: UserProfile, recs: list[dict], gaps: list[str]) -> list[str]:
+    avoids = []
+    fixed_outflow = p.monthly_expenses + total_monthly_emi(p)
+    if fixed_outflow > 0 and p.emergency_fund < fixed_outflow * 3:
+        avoids.append("Avoid aggressive investing before building at least a 3-month emergency fund.")
+    if high_interest_debt(p) > 0:
+        avoids.append("Avoid increasing discretionary SIPs while credit-card or personal-loan style debt is outstanding.")
+    if not p.has_health_insurance:
+        avoids.append("Avoid relying on investments as your medical safety net; health insurance comes first.")
+    if p.dependents > 0 and p.life_insurance_coverage < total_monthly_income(p) * 120:
+        avoids.append("Avoid investment-linked insurance as a substitute for adequate pure term cover.")
+    if any(r["years"] < 3 and r["allocation"]["equity"] > 0 for r in recs):
+        avoids.append("Avoid high equity exposure for goals due within 3 years.")
+    if total_monthly_needed(recs) > max(0, monthly_surplus(p)):
+        avoids.append("Avoid funding every goal at once; sequence high-priority goals first.")
+    if not avoids and not gaps:
+        avoids.append("Avoid changing a working plan too often; review annually or after major life changes.")
+    return avoids
+
+
+def personality_summary(p: UserProfile, health: dict, recs: list[dict]) -> dict:
+    surplus = monthly_surplus(p)
+    needed = total_monthly_needed(recs)
+    fixed_outflow = p.monthly_expenses + total_monthly_emi(p)
+    months = p.emergency_fund / fixed_outflow if fixed_outflow > 0 else 0
+
+    if health["total"] < 45 or surplus <= 0:
+        label = "Stabiliser"
+        summary = "Your plan needs cash-flow stability before ambition."
+        next_rupee = "Your next rupee should reduce fixed pressure or build emergency cash."
+    elif high_interest_debt(p) > 0:
+        label = "Debt Breaker"
+        summary = "Your biggest upside comes from closing expensive debt leaks."
+        next_rupee = "Your next rupee should attack the highest-interest loan."
+    elif months < 3:
+        label = "Foundation Builder"
+        summary = "Your investing plan gets stronger once the safety buffer is real."
+        next_rupee = "Your next rupee should build the emergency fund."
+    elif needed > surplus:
+        label = "Goal Stretcher"
+        summary = "Your goals are meaningful, but the plan needs sequencing."
+        next_rupee = "Your next rupee should go to the highest-priority goal."
+    elif health["total"] >= 70 and surplus > needed:
+        label = "Wealth Accelerator"
+        summary = "You have room to fund goals and still keep flexibility."
+        next_rupee = "Your next rupee can increase long-term goal SIPs or retirement funding."
+    else:
+        label = "Steady Builder"
+        summary = "You are building well; consistency matters more than complexity."
+        next_rupee = "Your next rupee should keep the automated goal SIPs moving."
+
+    return {"label": label, "summary": summary, "next_rupee": next_rupee}
+
+
+def personal_finance_playbook(
+    p: UserProfile,
+    health: dict,
+    recs: list[dict],
+    gaps: list[str],
+) -> dict:
+    personality = personality_summary(p, health, recs)
+    debt = debt_strategy(p)
+    tax_notes = tax_smart_notes(p, recs)
+    avoids = avoid_list(p, recs, gaps)
+    needed = total_monthly_needed(recs)
+    surplus = monthly_surplus(p)
+
+    answers = []
+    if needed <= max(0, surplus):
+        answers.append("Are my SIPs enough? Yes, based on current assumptions and entered goals.")
+    else:
+        answers.append(f"Are my SIPs enough? Not yet; the current plan is short by about Rs.{needed - max(0, surplus):,.0f}/month.")
+    if high_interest_debt(p) > 0:
+        answers.append("Should I invest before debt repayment? Keep only essential SIPs; expensive debt gets priority.")
+    elif p.emergency_fund < (p.monthly_expenses + total_monthly_emi(p)) * 3:
+        answers.append("Should I invest before emergency cash? Build the buffer first, then scale SIPs.")
+    else:
+        answers.append("Should I stop SIPs in a market fall? For long-term goals, continue unless cash flow breaks.")
+    answers.append(f"Which tax lens matters? {tax_notes[0]}")
+
+    return {
+        "personality": personality,
+        "one_sentence": personality["next_rupee"],
+        "answers": answers,
+        "tax_notes": tax_notes,
+        "debt_strategy": debt,
+        "avoid": avoids,
+    }
 
 
 def compute_health_score(p: UserProfile) -> dict:
@@ -515,8 +681,10 @@ def generate_pdf(
     gaps: list[str],
     output_path: str,
     actions: Optional[list[dict]] = None,
+    playbook: Optional[dict] = None,
 ):
     actions = actions or action_plan(p, recs, gaps)
+    playbook = playbook or personal_finance_playbook(p, health, recs, gaps)
     doc = SimpleDocTemplate(
         output_path,
         pagesize=A4,
@@ -574,6 +742,22 @@ def generate_pdf(
     for k in maxes:
         story.append(b(health["details"][k]))
 
+    story += section("Personal Finance Playbook")
+    personality = playbook["personality"]
+    story.append(b(f"{personality['label']}: {personality['summary']} {playbook['one_sentence']}"))
+    for answer in playbook["answers"]:
+        story.append(b(answer))
+    story.append(Paragraph("Tax-smart notes", S("ap", fontName="Helvetica-Bold", fontSize=10, spaceBefore=5)))
+    for note in playbook["tax_notes"][:4]:
+        story.append(b(note))
+    story.append(Paragraph("Debt strategy", S("ap", fontName="Helvetica-Bold", fontSize=10, spaceBefore=5)))
+    story.append(b(playbook["debt_strategy"]["summary"]))
+    for item in playbook["debt_strategy"]["items"][:3]:
+        story.append(b(item))
+    story.append(Paragraph("Avoid for now", S("ap", fontName="Helvetica-Bold", fontSize=10, spaceBefore=5)))
+    for item in playbook["avoid"][:5]:
+        story.append(b(item))
+
     if gaps:
         story += section("Action Items")
         for g in gaps:
@@ -612,6 +796,16 @@ def generate_pdf(
                 f"{alloc['gold'] * 100:.0f}% gold, {alloc['cash'] * 100:.0f}% cash/liquid."
             ),
         ]
+        guidance = rec.get("fund_category_guidance", {})
+        if guidance:
+            suitable = "; ".join(guidance.get("suitable", [])[:3])
+            caution = "; ".join(guidance.get("use_caution", [])[:2]) or "None for the core plan."
+            avoid = "; ".join(guidance.get("avoid", [])[:3])
+            items.extend([
+                b(f"Suitable categories: {suitable}."),
+                b(f"Use caution: {caution}"),
+                b(f"Avoid: {avoid}."),
+            ])
         story.append(KeepTogether(items))
 
     ret = retirement_summary(p)
