@@ -40,18 +40,18 @@ PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 
 def _inr(n: float) -> str:
-    """Indian number formatting: Rs.1,00,000 not Rs.100,000."""
+    """Indian number formatting: ₹1,00,000 not ₹100,000."""
     sign = "-" if n < 0 else ""
     whole = int(round(abs(n)))
     if whole < 1000:
-        return f"Rs.{sign}{whole}"
+        return f"₹{sign}{whole}"
     last3 = whole % 1000
     rest = whole // 1000
     parts = [f"{last3:03d}"]
     while rest:
         parts.append(f"{rest % 100:02d}" if rest >= 100 else str(rest))
         rest //= 100
-    return f"Rs.{sign}{','.join(reversed(parts))}"
+    return f"₹{sign}{','.join(reversed(parts))}"
 
 
 @dataclass
@@ -386,27 +386,27 @@ def personality_summary(p: UserProfile, health: dict, recs: list[dict]) -> dict:
     months = p.emergency_fund / fixed_outflow if fixed_outflow > 0 else 0
 
     if health["total"] < 45 or surplus <= 0:
-        label = "Stabiliser"
+        label = "The Stabiliser"
         summary = "Your plan needs cash-flow stability before ambition."
         next_rupee = "Your next rupee should reduce fixed pressure or build emergency cash."
     elif high_interest_debt(p) > 0:
-        label = "Debt Breaker"
+        label = "Debt Slayer"
         summary = "Your biggest upside comes from closing expensive debt leaks."
         next_rupee = "Your next rupee should attack the highest-interest loan."
     elif months < 3:
-        label = "Foundation Builder"
+        label = "Base-Building Era"
         summary = "Your investing plan gets stronger once the safety buffer is real."
         next_rupee = "Your next rupee should build the emergency fund."
     elif needed > surplus:
-        label = "Goal Stretcher"
+        label = "Big Dreamer"
         summary = "Your goals are meaningful, but the plan needs sequencing."
         next_rupee = "Your next rupee should go to the highest-priority goal."
     elif health["total"] >= 70 and surplus > needed:
-        label = "Wealth Accelerator"
+        label = "Money Magnet"
         summary = "You have room to fund goals and still keep flexibility."
         next_rupee = "Your next rupee can increase long-term goal SIPs or retirement funding."
     else:
-        label = "Steady Builder"
+        label = "Slow & Steady"
         summary = "You are building well; consistency matters more than complexity."
         next_rupee = "Your next rupee should keep the automated goal SIPs moving."
 
@@ -439,6 +439,8 @@ def personal_finance_playbook(
         answers.append("Should I stop SIPs in a market fall? For long-term goals, continue unless cash flow breaks.")
     answers.append(f"Which tax lens matters? {tax_notes[0]}")
 
+    nm = _next_move(p, health, recs)
+
     return {
         "personality": personality,
         "one_sentence": personality["next_rupee"],
@@ -446,7 +448,110 @@ def personal_finance_playbook(
         "tax_notes": tax_notes,
         "debt_strategy": debt,
         "avoid": avoids,
+        "next_move": nm,
     }
+
+
+def _next_move(p: UserProfile, health: dict, recs: list[dict]) -> dict:
+    """Structured next-move card for MoneyVibe UI."""
+    fixed = p.monthly_expenses + total_monthly_emi(p)
+    months = p.emergency_fund / fixed if fixed > 0 else 0
+    surplus = monthly_surplus(p)
+    ef_gap = max(0, fixed * 3 - p.emergency_fund)
+
+    if surplus <= 0:
+        return {
+            "headline": "Free up some cash flow this month.",
+            "why": f"Your expenses and EMIs eat all your income. Find {_inr(abs(surplus))} to cut or earn before anything else.",
+            "cta_label": "Review expenses",
+            "cta_action": "review",
+        }
+    if not p.has_health_insurance:
+        return {
+            "headline": "Get health insurance this week.",
+            "why": "One hospital visit without cover can wipe out years of savings. Even a basic ₹5L plan works.",
+            "cta_label": "Compare plans",
+            "cta_action": "insure",
+        }
+    if months < 3:
+        monthly_ef = min(surplus, ef_gap)
+        return {
+            "headline": f"Put {_inr(monthly_ef)} into your emergency fund this month.",
+            "why": f"You're {months:.1f} months deep on your emergency buffer. Getting to 3 months unlocks you to start investing without stress.",
+            "cta_label": "Set up auto-transfer",
+            "cta_action": "emergency_fund",
+        }
+    if high_interest_debt(p) > 0:
+        top_loan = max(p.loans, key=lambda l: l.annual_rate)
+        return {
+            "headline": f"Attack your {top_loan.name} debt — {top_loan.annual_rate * 100:.0f}% is expensive.",
+            "why": f"Outstanding: {_inr(top_loan.balance)}. Every month you wait, interest compounds against you.",
+            "cta_label": "See debt plan",
+            "cta_action": "repay_debt",
+        }
+    if recs:
+        top = recs[0]
+        return {
+            "headline": f"Start your {top['name']} SIP — {_inr(top['monthly_needed'])}/month.",
+            "why": f"This is your highest-priority goal. Automating it means you don't have to think about it.",
+            "cta_label": "Set up SIP",
+            "cta_action": "invest",
+        }
+    return {
+        "headline": "You're in great shape. Review your plan quarterly.",
+        "why": "All fundamentals are covered. Check back after any job, income, or life change.",
+        "cta_label": "Review plan",
+        "cta_action": "review",
+    }
+
+
+def milestone_badges(p: UserProfile, recs: list[dict]) -> list[dict]:
+    """Return a list of milestone badges with unlock status."""
+    income = total_monthly_income(p)
+    surplus = monthly_surplus(p)
+    fixed = p.monthly_expenses + total_monthly_emi(p)
+    ef_months = p.emergency_fund / fixed if fixed > 0 else 0
+    savings_rate = surplus / income if income > 0 else 0
+    recommended_cover = income * 120
+
+    badges = [
+        {
+            "name": "Health Insured",
+            "unlocked": p.has_health_insurance,
+            "tooltip": "You have health insurance in place.",
+        },
+        {
+            "name": "Life Insured",
+            "unlocked": p.dependents == 0 or p.life_insurance_coverage >= recommended_cover,
+            "tooltip": "Life cover meets the 10x income benchmark (or no dependents).",
+        },
+        {
+            "name": "Saving Consistently",
+            "unlocked": savings_rate >= 0.10,
+            "tooltip": f"Saving {savings_rate:.0%} of income — above the 10% threshold.",
+        },
+        {
+            "name": "3-Month Buffer",
+            "unlocked": ef_months >= 3,
+            "tooltip": f"Emergency fund covers {ef_months:.1f} months of expenses.",
+        },
+        {
+            "name": "Debt-Free",
+            "unlocked": high_interest_debt(p) == 0 and total_debt(p) == 0,
+            "tooltip": "No outstanding loans or high-interest debt.",
+        },
+        {
+            "name": "All Goals Funded",
+            "unlocked": total_monthly_needed(recs) <= max(0, surplus),
+            "tooltip": "Current surplus covers all goal SIPs.",
+        },
+        {
+            "name": "Long-Term Investor",
+            "unlocked": any(g.years >= 5 for g in p.goals) and p.existing_investments > 0,
+            "tooltip": "Has a 5+ year goal and existing investments.",
+        },
+    ]
+    return badges
 
 
 def compute_health_score(p: UserProfile, recs: list[dict] | None = None) -> dict:
@@ -731,11 +836,24 @@ def score_color(score: int) -> colors.HexColor:
 
 
 def score_label(score: int) -> str:
+    if score >= 85:
+        return "Platinum"
     if score >= 70:
-        return "Healthy"
+        return "Gold"
     if score >= 45:
-        return "Needs Attention"
-    return "At Risk"
+        return "Silver"
+    return "Bronze"
+
+
+def score_tier(score: int) -> dict:
+    """Return tier name, tagline, and badge for the MoneyVibe design language."""
+    if score >= 85:
+        return {"tier": "PLATINUM", "tagline": "elite vibes", "color": "#00E5B8"}
+    if score >= 70:
+        return {"tier": "GOLD", "tagline": "building well", "color": "#FFB800"}
+    if score >= 45:
+        return {"tier": "SILVER", "tagline": "building", "color": "#B8B0D0"}
+    return {"tier": "BRONZE", "tagline": "needs work", "color": "#FF4ECD"}
 
 
 def _score_bg(score: int, max_score: int) -> colors.Color:
