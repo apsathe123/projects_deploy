@@ -59,10 +59,10 @@ SUGGESTED_GOALS = [
     {"name": "House (Down Payment)", "target": 3000000, "years": 7, "priority": "High"},
     {"name": "Kids Education", "target": 2500000, "years": 15, "priority": "High"},
     {"name": "Wedding", "target": 2000000, "years": 5, "priority": "High"},
+    {"name": "Parents' Medical Fund", "target": 1500000, "years": 5, "priority": "High"},
+    {"name": "Maternity & Early Childcare", "target": 1000000, "years": 3, "priority": "Medium"},
     {"name": "Car", "target": 800000, "years": 3, "priority": "Medium"},
-    {"name": "Travel Fund", "target": 300000, "years": 2, "priority": "Low"},
-    {"name": "College Fund", "target": 2000000, "years": 18, "priority": "Medium"},
-    {"name": "Having Kids", "target": 500000, "years": 3, "priority": "Medium"},
+    {"name": "Emergency Buffer", "target": 500000, "years": 2, "priority": "High"},
 ]
 
 STEPS = [
@@ -156,14 +156,15 @@ def load_query_params_once():
     st.session_state.loaded_from_query = True
 
 
-def ensure_defaults():
-    defaults = {
+def _all_field_defaults() -> dict:
+    """Single source of truth for all session state defaults."""
+    return {
         "age": 30,
         "dependents": 0,
-        "monthly_income": 100000.0,
+        "monthly_income": 50000.0,
         "other_income": 0.0,
-        "monthly_expenses": 60000.0,
-        "savings": 200000.0,
+        "monthly_expenses": 30000.0,
+        "savings": 0.0,
         "emergency_fund": 0.0,
         "existing_investments": 0.0,
         "investment_type": "None",
@@ -185,6 +186,12 @@ def ensure_defaults():
         "goals": [],
         "loans": [],
         "plan": None,
+    }
+
+
+def ensure_defaults():
+    defaults = {
+        **_all_field_defaults(),
         "current_step": 0,
         "last_added": -1,
         "confirm_remove_goal": None,
@@ -420,7 +427,7 @@ def goto(step_delta: int):
 
 def reset_step(step_index: int):
     """Reset only the fields belonging to *step_index* back to their defaults."""
-    defaults = _all_defaults()
+    defaults = _all_field_defaults()
     for key in STEP_KEYS.get(step_index, []):
         if key in defaults:
             st.session_state[key] = defaults[key]
@@ -430,38 +437,6 @@ def reset_all():
     """Clear the entire session state and restart at step 0."""
     for key in list(st.session_state.keys()):
         del st.session_state[key]
-
-
-def _all_defaults() -> dict:
-    return {
-        "age": 30,
-        "dependents": 0,
-        "monthly_income": 100000.0,
-        "other_income": 0.0,
-        "monthly_expenses": 60000.0,
-        "savings": 200000.0,
-        "emergency_fund": 0.0,
-        "existing_investments": 0.0,
-        "investment_type": "None",
-        "has_health_insurance": "Yes",
-        "life_cover_option": "No",
-        "life_insurance_coverage": 0.0,
-        "tax_regime": "New",
-        "chosen_risk_profile": "Moderate",
-        "effective_risk_profile": "moderate",
-        "risk_capacity_score": 2,
-        "risk_tolerance_score": 2,
-        "auto_allocate_existing": False,
-        "inflation_rate_pct": INFLATION_INDIA * 100,
-        "return_adjustment_pct": 0.0,
-        "retirement_age": 60,
-        "life_expectancy": 85,
-        "retirement_monthly_expenses": 0.0,
-        "retirement_corpus": 0.0,
-        "goals": [],
-        "loans": [],
-        "plan": None,
-    }
 
 
 def send_pdf_email(to_email: str, pdf_bytes: bytes, health_score: int, goals_count: int) -> bool:
@@ -491,12 +466,21 @@ def send_pdf_email(to_email: str, pdf_bytes: bytes, health_score: int, goals_cou
             ),
             "attachments": [{
                 "filename": "Personal_Financial_Plan.pdf",
-                "content": list(pdf_bytes),
+                "content": base64.b64encode(pdf_bytes).decode("ascii"),
             }],
         })
         return True
-    except Exception:
+    except Exception as e:
+        import logging
+        logging.warning(f"Email send failed: {e}")
         return False
+
+
+def _sanitize_for_sheet(value: str) -> str:
+    """Prevent CSV/formula injection in Google Sheets."""
+    if value and value[0] in ("=", "+", "-", "@"):
+        return "'" + value
+    return value
 
 
 def record_email(email: str, health_score: int, goals_count: int):
@@ -510,9 +494,15 @@ def record_email(email: str, health_score: int, goals_count: int):
         gc = gspread.authorize(creds)
         sheet = gc.open_by_key(st.secrets["GSHEET_ID"]).sheet1
         from datetime import datetime
-        sheet.append_row([email, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), health_score, goals_count])
-    except Exception:
-        pass  # silent — recording is best-effort
+        sheet.append_row([
+            _sanitize_for_sheet(email),
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            health_score,
+            goals_count,
+        ])
+    except Exception as e:
+        import logging
+        logging.warning(f"Email recording failed: {e}")
 
 
 load_query_params_once()
@@ -654,7 +644,7 @@ elif step == 3:
             index=["Yes", "No"].index(st.session_state.has_health_insurance),
         )
         if st.session_state.has_health_insurance == "No":
-            st.caption("Start with at least ₹10L individual / ₹20L family floater, then adjust by city and family needs.")
+            st.caption("Start with at least ₹15L individual / ₹25L family floater for metros. ₹10L minimum for smaller cities.")
     with col2:
         st.session_state.life_cover_option = st.radio(
             "Life insurance (term plan)?", ["Yes", "No"], horizontal=True,
@@ -868,11 +858,16 @@ elif step == 6:
             st.error("Enter your monthly expenses before EMIs. It must be above ₹0.")
         elif not st.session_state.goals:
             st.error("Add at least one financial goal before generating the plan.")
+        elif int(st.session_state.retirement_age) <= int(st.session_state.age):
+            st.error(f"Retirement age ({int(st.session_state.retirement_age)}) must be greater than your current age ({int(st.session_state.age)}).")
+        elif int(st.session_state.life_expectancy) <= int(st.session_state.retirement_age):
+            st.error(f"Life expectancy ({int(st.session_state.life_expectancy)}) must be greater than retirement age ({int(st.session_state.retirement_age)}).")
         else:
             with st.spinner("Building your financial plan…"):
+                st.session_state.pdf_bytes = None  # clear cached PDF
                 profile = build_profile()
                 recs = goal_recommendations(profile)
-                health = compute_health_score(profile)
+                health = compute_health_score(profile, recs)
                 gaps = gap_analysis(profile)
                 actions = action_plan(profile, recs, gaps)
                 playbook = personal_finance_playbook(profile, health, recs, gaps)
@@ -1025,10 +1020,14 @@ elif step == 6:
                 if not rec["feasible"]:
                     trade = rec["tradeoffs"]
                     st.markdown("**Trade-offs**")
+                    risk_note = ""
+                    if trade["higher_risk_profile_sip"] < rec["monthly_needed"]:
+                        risk_note = f" Move to next risk profile: {inr(trade['higher_risk_profile_sip'])}/mo."
                     st.info(
                         f"Extend by 2 years: {inr(trade['extend_by_2_years'])}/mo. "
                         f"Reduce target by 10%: {inr(trade['reduce_target_10pct'])}/mo. "
                         f"Extra monthly capacity needed: {inr(trade['increase_needed'])}."
+                        f"{risk_note}"
                     )
 
                 if alloc["equity"] > 0:
@@ -1056,6 +1055,10 @@ elif step == 6:
         col1.metric("Years to retirement", ret["years_to_retirement"])
         col2.metric("Corpus estimate", inr(ret["corpus_needed"]))
         col3.metric("Retirement SIP", f"{inr(ret['monthly_needed'])}/mo")
+        st.caption(
+            f"Corpus accounts for inflation-adjusted withdrawals over {ret['retirement_years']} years, "
+            f"assuming the corpus earns {ret['withdrawal_return']:.0%} p.a. (conservative, debt-heavy mix) during retirement."
+        )
 
         with st.expander("Assumptions & guardrails"):
             st.write(f"Assumptions last reviewed: {LAST_UPDATED}; effective from {DATA_EFFECTIVE_FROM}.")
@@ -1069,13 +1072,15 @@ elif step == 6:
             for source in DATA_SOURCES:
                 st.caption(source)
 
-        with st.spinner("Preparing PDF…"):
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                tmp_path = tmp.name
-            generate_pdf(profile, health, recs, gaps, tmp_path, actions, playbook)
-            with open(tmp_path, "rb") as f:
-                pdf_bytes = f.read()
-            os.unlink(tmp_path)
+        if "pdf_bytes" not in st.session_state or not st.session_state.pdf_bytes:
+            with st.spinner("Preparing PDF…"):
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                    tmp_path = tmp.name
+                generate_pdf(profile, health, recs, gaps, tmp_path, actions, playbook)
+                with open(tmp_path, "rb") as f:
+                    st.session_state.pdf_bytes = f.read()
+                os.unlink(tmp_path)
+        pdf_bytes = st.session_state.pdf_bytes
 
         st.download_button(
             label="Download PDF Report",

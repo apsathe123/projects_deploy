@@ -117,12 +117,13 @@ ALLOCATION_TABLE = {
         ),
     },
     ("short", "moderate"): {
-        "equity": 0.10, "debt": 0.65, "gold": 0.05, "cash": 0.20,
+        "equity": 0.00, "debt": 0.75, "gold": 0.05, "cash": 0.20,
         "return": 0.067,
         "label": "Capital Preservation",
         "rationale": (
-            "A small equity allocation via arbitrage funds provides equity-taxation treatment "
-            "with near-debt returns. Core remains in short-duration debt and FDs."
+            "With < 3 years, stick to short-duration debt funds, FDs, and liquid funds. "
+            "Arbitrage funds offer similar returns to debt with added complexity — not worth it. "
+            "Core remains in predictable, low-risk instruments."
         ),
     },
     ("short", "aggressive"): {

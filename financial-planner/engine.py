@@ -171,11 +171,13 @@ def allocation_split(monthly_needed: float, alloc: dict) -> dict:
     }
 
 
-def scenario_values(monthly_needed: float, years: int, base_return: float) -> dict:
+def scenario_values(monthly_needed: float, years: int, base_return: float, equity_pct: float = 0.5) -> dict:
+    # Scale variance by equity weight: 80% equity = ±3.2%, 50% = ±2%, 0% = ±0.8%
+    spread = 0.008 + equity_pct * 0.03
     scenarios = {
-        "conservative": max(0, base_return - 0.02),
+        "conservative": max(0, base_return - spread),
         "base": base_return,
-        "optimistic": base_return + 0.02,
+        "optimistic": base_return + spread,
     }
     n = years * 12
     values = {}
@@ -201,11 +203,21 @@ def build_tradeoffs(rec: dict, p: UserProfile) -> dict:
     reduced = monthly_investment_needed(reduced_target, years, annual_return, existing)
     surplus = max(0, monthly_surplus(p))
 
+    # F11: risk-profile trade-off — what if user moves one notch more aggressive?
+    next_risk = {"conservative": "moderate", "moderate": "aggressive"}.get(p.risk_profile)
+    if next_risk:
+        higher_alloc = get_allocation(years, next_risk)
+        higher_return = adjusted_return(higher_alloc["return"], p)
+        higher_risk_sip = monthly_investment_needed(target, years, higher_return, existing)
+    else:
+        higher_risk_sip = current  # already aggressive
+
     return {
         "extend_by_2_years": extended,
         "reduce_target_10pct": reduced,
         "increase_needed": max(0, current - surplus),
         "available_surplus": surplus,
+        "higher_risk_profile_sip": higher_risk_sip,
     }
 
 
@@ -241,7 +253,7 @@ def goal_recommendations(p: UserProfile) -> list[dict]:
             "existing_applied": existing_applied,
             "target_is_today_value": g.target_is_today_value,
             "feasible": feasible,
-            "scenarios": scenario_values(monthly_needed, g.years, annual_return),
+            "scenarios": scenario_values(monthly_needed, g.years, annual_return, alloc["equity"]),
         }
         rec["tradeoffs"] = build_tradeoffs(rec, p)
         rec["fund_category_guidance"] = fund_category_guidance(rec, p)
@@ -265,7 +277,7 @@ def fund_category_guidance(rec: dict, p: UserProfile) -> dict:
         suitable.extend(["Liquid funds or overnight funds", "Bank FD or short-term deposit", "Ultra-short duration debt funds"])
         if p.tax_regime == "old":
             suitable.append("Tax-saving deposits only if lock-in matches the goal")
-        cautious.append("Arbitrage funds if you understand short-term volatility and exit loads")
+        cautious.append("Arbitrage funds only if you specifically need equity taxation treatment; returns match liquid funds")
         avoid.extend(["Small-cap funds", "Sector or thematic funds", "Direct stocks", "Long-duration debt funds"])
     elif years < 7:
         suitable.extend(["Large-cap index funds", "Flexi-cap funds with a conservative debt mix", "Short-duration debt funds or PPF for the debt bucket"])
@@ -314,7 +326,7 @@ def debt_strategy(p: UserProfile) -> dict:
     elif high_debt > 0:
         summary = "High-interest debt is the first money leak to close."
         items.append(f"Prioritise repayment of about Rs.{high_debt:,.0f} before scaling low-priority equity SIPs.")
-        items.append("Use an avalanche order: highest interest rate first, while keeping minimum EMIs current on every loan.")
+        items.append("Use an avalanche order: highest interest rate first, while keeping minimum EMIs current on every loan. If motivation matters more than math, the snowball method (smallest balance first) builds momentum faster.")
     elif emi_ratio > 0.35:
         summary = "EMIs are taking a large share of income, so flexibility is tight."
         items.append("Pause new low-priority goals and reduce EMI pressure before increasing market risk.")
@@ -419,7 +431,7 @@ def personal_finance_playbook(
     }
 
 
-def compute_health_score(p: UserProfile) -> dict:
+def compute_health_score(p: UserProfile, recs: list[dict] | None = None) -> dict:
     scores = {}
     details = {}
     income = total_monthly_income(p)
@@ -482,7 +494,8 @@ def compute_health_score(p: UserProfile) -> dict:
         scores["life_insurance"] = 0
         details["life_insurance"] = f"{p.dependents} dependent(s) need stronger protection. Recommended cover: Rs.{recommended_coverage:,.0f}."
 
-    recs = goal_recommendations(p)
+    if recs is None:
+        recs = goal_recommendations(p)
     needed = total_monthly_needed(recs)
     blocked_by_debt = high_interest_debt(p) > 0
     if needed == 0:
@@ -509,53 +522,57 @@ def compute_health_score(p: UserProfile) -> dict:
 
 
 def gap_analysis(p: UserProfile) -> list[str]:
-    gaps = []
+    """Return severity-ranked gap warnings (critical first, then high, then medium)."""
+    critical = []
+    high = []
+    medium = []
     income = total_monthly_income(p)
     surplus = monthly_surplus(p)
     fixed_outflow = p.monthly_expenses + total_monthly_emi(p)
     recommended_coverage = income * 120
 
+    if surplus <= 0:
+        critical.append("Expenses plus EMIs meet or exceed income. Reduce fixed outflows before funding new goals.")
+
+    if not p.has_health_insurance:
+        critical.append(
+            "Buy health insurance before increasing risky investments. Start with at least Rs.15L individual "
+            "or Rs.25L family floater for metros (Rs.10L minimum for smaller cities)."
+        )
+
     if p.emergency_fund < fixed_outflow * 3:
         months = p.emergency_fund / fixed_outflow if fixed_outflow > 0 else 0
         needed = fixed_outflow * 3 - p.emergency_fund
-        gaps.append(
+        critical.append(
             f"Emergency fund covers {months:.1f} months. Build at least 3 months by adding Rs.{needed:,.0f} "
             "to a liquid fund, overnight fund, or savings account."
         )
 
-    if not p.has_health_insurance:
-        gaps.append(
-            "Buy health insurance before increasing risky investments. Start with at least Rs.10L individual "
-            "or Rs.20L family floater cover, then review based on city and family needs."
-        )
-
-    if p.dependents > 0 and p.life_insurance_coverage < recommended_coverage and p.savings + p.existing_investments < recommended_coverage:
-        shortfall = recommended_coverage - max(p.life_insurance_coverage, 0)
-        gaps.append(
-            f"Increase term life cover by about Rs.{shortfall:,.0f}. Prefer a pure term plan and avoid mixing "
-            "insurance with investments."
-        )
-
     if high_interest_debt(p) > 0:
-        gaps.append(
+        high.append(
             f"High-interest debt outstanding: Rs.{high_interest_debt(p):,.0f}. Route spare cash toward repayment "
             "before starting or scaling discretionary equity SIPs."
         )
 
-    if surplus <= 0:
-        gaps.append("Expenses plus EMIs meet or exceed income. Reduce fixed outflows before funding new goals.")
-    else:
+    if p.dependents > 0 and p.life_insurance_coverage < recommended_coverage and p.savings + p.existing_investments < recommended_coverage:
+        shortfall = recommended_coverage - max(p.life_insurance_coverage, 0)
+        high.append(
+            f"Increase term life cover by about Rs.{shortfall:,.0f}. Prefer a pure term plan and avoid mixing "
+            "insurance with investments."
+        )
+
+    if surplus > 0:
         savings_rate = surplus / income if income > 0 else 0
         if savings_rate < 0.10:
-            gaps.append(f"Savings rate after EMIs is {savings_rate:.0%}. Target 15-20% before adding low-priority goals.")
+            high.append(f"Savings rate after EMIs is {savings_rate:.0%}. Target 15-20% before adding low-priority goals.")
 
     if p.tax_regime == "new":
-        gaps.append(
+        medium.append(
             "You selected the new tax regime. Treat ELSS, PPF, and NPS as investment choices first; do not assume "
             "80C or 80CCD deductions unless your tax setup allows them."
         )
 
-    return gaps
+    return critical + high + medium
 
 
 def action_plan(p: UserProfile, recs: list[dict], gaps: list[str]) -> list[dict]:
@@ -602,12 +619,40 @@ def job_loss_buffer_months(p: UserProfile) -> float:
     return (p.savings + p.emergency_fund) / fixed_outflow if fixed_outflow > 0 else 0
 
 
+def retirement_corpus_with_inflation(
+    monthly_need_at_retirement: float,
+    retirement_years: int,
+    inflation_rate: float,
+    withdrawal_return: float,
+) -> float:
+    """Corpus needed to fund inflation-adjusted withdrawals over retirement_years.
+
+    Each year's real withdrawal grows with inflation. The corpus earns
+    withdrawal_return (conservative post-retirement return) during drawdown.
+    Uses present-value-of-growing-annuity formula.
+    """
+    if retirement_years <= 0:
+        return 0
+    annual_need = monthly_need_at_retirement * 12
+    r = withdrawal_return
+    g = inflation_rate
+    if abs(r - g) < 1e-6:
+        # Edge case: return equals inflation → simple multiplication
+        return annual_need * retirement_years
+    # PV of growing annuity: A * [1 - ((1+g)/(1+r))^n] / (r - g)
+    return annual_need * (1 - ((1 + g) / (1 + r)) ** retirement_years) / (r - g)
+
+
 def retirement_summary(p: UserProfile) -> dict:
     years_to_retirement = max(0, p.retirement_age - p.age)
     retirement_years = max(0, p.life_expectancy - p.retirement_age)
     monthly_need_today = p.retirement_monthly_expenses or p.monthly_expenses
     monthly_need_at_retirement = future_value(monthly_need_today, years_to_retirement, p.inflation_rate)
-    corpus_needed = monthly_need_at_retirement * 12 * retirement_years
+    # Post-retirement: conservative allocation earns ~7% (debt-heavy portfolio)
+    withdrawal_return = 0.07
+    corpus_needed = retirement_corpus_with_inflation(
+        monthly_need_at_retirement, retirement_years, p.inflation_rate, withdrawal_return
+    )
     annual_return = adjusted_return(get_allocation(max(1, years_to_retirement), p.risk_profile)["return"], p)
     monthly_needed = monthly_investment_needed(corpus_needed, max(1, years_to_retirement), annual_return, p.retirement_corpus)
     return {
@@ -616,6 +661,7 @@ def retirement_summary(p: UserProfile) -> dict:
         "monthly_need_at_retirement": monthly_need_at_retirement,
         "corpus_needed": corpus_needed,
         "monthly_needed": monthly_needed,
+        "withdrawal_return": withdrawal_return,
     }
 
 
