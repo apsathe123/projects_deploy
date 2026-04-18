@@ -12,6 +12,7 @@ from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
+from reportlab.graphics.shapes import Drawing, Rect, String
 from reportlab.platypus import (
     HRFlowable,
     KeepTogether,
@@ -895,6 +896,17 @@ def generate_pdf(
         f'<font size="12" color="{col.hexval()}">  /  100  —  {score_label(total)}</font>',
         S("score", leading=36, spaceBefore=4, spaceAfter=6),
     ))
+
+    # Gauge bar
+    gauge_w, gauge_h = 174 * mm, 10 * mm
+    gauge = Drawing(gauge_w, gauge_h)
+    gauge.add(Rect(0, 0, gauge_w, gauge_h, fillColor=colors.HexColor("#e5e7eb"), strokeColor=None))
+    fill_w = gauge_w * total / 100
+    gauge.add(Rect(0, 0, fill_w, gauge_h, fillColor=col, strokeColor=None))
+    gauge.add(String(gauge_w / 2, 1.5 * mm, f"{total} / 100", fontSize=7, fillColor=DARK, textAnchor="middle", fontName="Helvetica-Bold"))
+    story.append(gauge)
+    story.append(sp(4))
+
     SCORE_MAXES = [
         ("emergency_fund", "Emergency Fund", 20),
         ("savings_rate", "Savings Rate", 20),
@@ -902,18 +914,30 @@ def generate_pdf(
         ("life_insurance", "Life Insurance", 15),
         ("goal_feasibility", "Goal Feasibility", 30),
     ]
-    score_rows = [["Category", "Score", "Max", "Detail"]]
+
+    def _mini_bar(score: int, max_v: int) -> Drawing:
+        """Small horizontal bar for the score table."""
+        bar_w, bar_h = 30 * mm, 5 * mm
+        d = Drawing(bar_w, bar_h)
+        d.add(Rect(0, 0, bar_w, bar_h, fillColor=colors.HexColor("#e5e7eb"), strokeColor=None))
+        pct = score / max_v if max_v > 0 else 0
+        d.add(Rect(0, 0, bar_w * pct, bar_h, fillColor=_score_fg(score, max_v), strokeColor=None))
+        return d
+
+    score_rows = [["Category", "Score", "Max", "", "Detail"]]
     for k, label, max_v in SCORE_MAXES:
-        score_rows.append([label, str(health["scores"][k]), str(max_v), health["details"][k]])
-    score_tbl = Table(score_rows, colWidths=[42 * mm, 16 * mm, 14 * mm, 102 * mm])
+        s = health["scores"][k]
+        score_rows.append([label, str(s), str(max_v), _mini_bar(s, max_v), health["details"][k]])
+    score_tbl = Table(score_rows, colWidths=[38 * mm, 14 * mm, 12 * mm, 32 * mm, 78 * mm])
     score_style = [
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 8.5),
         ("BACKGROUND", (0, 0), (-1, 0), HDR_BG),
         ("TEXTCOLOR", (0, 0), (-1, 0), DARK),
         ("TEXTCOLOR", (0, 1), (0, -1), MID),
-        ("TEXTCOLOR", (3, 1), (3, -1), MID),
+        ("TEXTCOLOR", (4, 1), (4, -1), MID),
         ("ALIGN", (1, 0), (2, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LINEBELOW", (0, 0), (-1, 0), 0.5, RULE),
         ("TOPPADDING", (0, 0), (-1, -1), 4),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
