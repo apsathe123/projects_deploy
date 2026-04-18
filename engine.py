@@ -1,42 +1,57 @@
 """
-Financial planning engine — scoring, recommendations, and PDF generation.
-India-specific: uses india_profiles.py for asset allocations and instrument recommendations.
+Financial planning engine: scoring, recommendations, action plans, and PDF output.
+India-specific assumptions live in india_profiles.py.
 """
 
-from dataclasses import dataclass
-from reportlab.lib.pagesizes import A4
+from dataclasses import dataclass, field
+from typing import Optional
+
 from reportlab.lib import colors
-from reportlab.lib.units import mm
-from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_JUSTIFY
+from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
+from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.units import mm
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, HRFlowable, KeepTogether, Table, TableStyle
+    HRFlowable,
+    KeepTogether,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
 )
-from india_profiles import get_allocation
+
+from india_profiles import (
+    DATA_EFFECTIVE_FROM,
+    DATA_SOURCES,
+    INFLATION_INDIA,
+    LAST_UPDATED,
+    RETURN_ASSUMPTIONS,
+    TAX_NOTES,
+    get_allocation,
+)
 
 
-# ── Monthly investment needed ─────────────────────────────────────────────────
-def monthly_investment_needed(target: float, years: int, annual_return: float,
-                               existing: float = 0) -> float:
-    """PMT calculation: how much to invest monthly to reach target."""
-    n = years * 12
-    r = annual_return / 12
-    fv_existing = existing * (1 + r) ** n
-    remaining = max(0, target - fv_existing)
-    if remaining == 0:
-        return 0
-    if r == 0:
-        return remaining / n
-    return remaining * r / ((1 + r) ** n - 1)
+RISK_ORDER = {"conservative": 0, "moderate": 1, "aggressive": 2}
+PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 
-# ── Data structures ───────────────────────────────────────────────────────────
 @dataclass
 class Goal:
     name: str
     target_amount: float
     years: int
     priority: str  # high / medium / low
+    target_is_today_value: bool = True
+    existing_allocated: float = 0.0
+
+
+@dataclass
+class Loan:
+    name: str
+    balance: float
+    annual_rate: float
+    monthly_emi: float
 
 
 @dataclass
@@ -49,210 +64,405 @@ class UserProfile:
     savings: float
     emergency_fund: float
     has_health_insurance: bool
-    life_insurance_coverage: float  # 0 if none; recommended = 120x monthly income
+    life_insurance_coverage: float
     existing_investments: float
-    investment_type: str            # e.g. stocks, property, pension, mixed
-    risk_profile: str               # conservative / moderate / aggressive
+    investment_type: str
+    risk_profile: str
     goals: list[Goal]
+    loans: list[Loan] = field(default_factory=list)
+    tax_regime: str = "new"
+    risk_capacity_score: int = 2
+    risk_tolerance_score: int = 2
+    auto_allocate_existing: bool = False
+    inflation_rate: float = INFLATION_INDIA
+    return_adjustment: float = 0.0
+    retirement_age: int = 60
+    life_expectancy: int = 85
+    retirement_monthly_expenses: float = 0.0
+    retirement_corpus: float = 0.0
 
 
-# ── Health score ──────────────────────────────────────────────────────────────
+def monthly_investment_needed(
+    target: float,
+    years: int,
+    annual_return: float,
+    existing: float = 0,
+) -> float:
+    """PMT calculation: how much to invest monthly to reach target."""
+    n = years * 12
+    if n <= 0:
+        return max(0, target - existing)
+    r = annual_return / 12
+    fv_existing = existing * (1 + r) ** n
+    remaining = max(0, target - fv_existing)
+    if remaining == 0:
+        return 0
+    if r == 0:
+        return remaining / n
+    return remaining * r / ((1 + r) ** n - 1)
+
+
+def future_value(today_value: float, years: int, inflation_rate: float = INFLATION_INDIA) -> float:
+    return today_value * ((1 + inflation_rate) ** years)
+
+
+def risk_profile_from_score(score: int) -> str:
+    if score <= 1:
+        return "conservative"
+    if score == 2:
+        return "moderate"
+    return "aggressive"
+
+
+def stricter_risk_profile(*profiles: str) -> str:
+    clean = [p for p in profiles if p in RISK_ORDER]
+    if not clean:
+        return "moderate"
+    return min(clean, key=lambda p: RISK_ORDER[p])
+
+
+def adjusted_return(base_return: float, p: UserProfile) -> float:
+    return max(0, base_return + p.return_adjustment)
+
+
+def total_monthly_income(p: UserProfile) -> float:
+    return p.monthly_income + p.other_income
+
+
+def total_monthly_emi(p: UserProfile) -> float:
+    return sum(l.monthly_emi for l in p.loans)
+
+
+def monthly_surplus(p: UserProfile) -> float:
+    return total_monthly_income(p) - p.monthly_expenses - total_monthly_emi(p)
+
+
+def total_debt(p: UserProfile) -> float:
+    return sum(l.balance for l in p.loans)
+
+
+def high_interest_debt(p: UserProfile) -> float:
+    return sum(l.balance for l in p.loans if l.annual_rate >= 0.12)
+
+
+def high_interest_emi(p: UserProfile) -> float:
+    return sum(l.monthly_emi for l in p.loans if l.annual_rate >= 0.12)
+
+
+def goal_future_target(g: Goal, p: UserProfile) -> float:
+    if g.target_is_today_value:
+        return future_value(g.target_amount, g.years, p.inflation_rate)
+    return g.target_amount
+
+
+def sorted_goals(goals: list[Goal]) -> list[Goal]:
+    return sorted(goals, key=lambda g: (PRIORITY_ORDER.get(g.priority, 1), g.years))
+
+
+def allocation_split(monthly_needed: float, alloc: dict) -> dict:
+    return {
+        "equity": monthly_needed * alloc["equity"],
+        "debt": monthly_needed * alloc["debt"],
+        "gold": monthly_needed * alloc["gold"],
+        "cash": monthly_needed * alloc["cash"],
+    }
+
+
+def scenario_values(monthly_needed: float, years: int, base_return: float) -> dict:
+    scenarios = {
+        "conservative": max(0, base_return - 0.02),
+        "base": base_return,
+        "optimistic": base_return + 0.02,
+    }
+    n = years * 12
+    values = {}
+    for label, annual_return in scenarios.items():
+        r = annual_return / 12
+        if r == 0:
+            values[label] = monthly_needed * n
+        else:
+            values[label] = monthly_needed * (((1 + r) ** n - 1) / r)
+    return values
+
+
+def build_tradeoffs(rec: dict, p: UserProfile) -> dict:
+    target = rec["future_target"]
+    years = rec["years"]
+    annual_return = rec["return"]
+    existing = rec["existing_applied"]
+    current = rec["monthly_needed"]
+
+    extend_years = min(50, years + 2)
+    extended = monthly_investment_needed(target, extend_years, annual_return, existing)
+    reduced_target = target * 0.9
+    reduced = monthly_investment_needed(reduced_target, years, annual_return, existing)
+    surplus = max(0, monthly_surplus(p))
+
+    return {
+        "extend_by_2_years": extended,
+        "reduce_target_10pct": reduced,
+        "increase_needed": max(0, current - surplus),
+        "available_surplus": surplus,
+    }
+
+
+def goal_recommendations(p: UserProfile) -> list[dict]:
+    recs = []
+    surplus_remaining = monthly_surplus(p)
+    explicit_existing = sum(g.existing_allocated for g in p.goals)
+    pool_existing = max(0, p.existing_investments - explicit_existing) if p.auto_allocate_existing else 0
+
+    for g in sorted_goals(p.goals):
+        alloc = get_allocation(g.years, p.risk_profile)
+        annual_return = adjusted_return(alloc["return"], p)
+        target = goal_future_target(g, p)
+        pool_applied = min(pool_existing, target) if p.auto_allocate_existing else 0
+        pool_existing = max(0, pool_existing - pool_applied)
+        existing_applied = min(target, g.existing_allocated + pool_applied)
+        monthly_needed = monthly_investment_needed(target, g.years, annual_return, existing_applied)
+        feasible = monthly_needed <= surplus_remaining
+        surplus_remaining = max(0, surplus_remaining - monthly_needed)
+        split = allocation_split(monthly_needed, alloc)
+
+        rec = {
+            "name": g.name,
+            "today_target": g.target_amount,
+            "target": target,
+            "future_target": target,
+            "years": g.years,
+            "priority": g.priority,
+            "monthly_needed": monthly_needed,
+            "allocation": alloc,
+            "return": annual_return,
+            "asset_sip_split": split,
+            "existing_applied": existing_applied,
+            "target_is_today_value": g.target_is_today_value,
+            "feasible": feasible,
+            "scenarios": scenario_values(monthly_needed, g.years, annual_return),
+        }
+        rec["tradeoffs"] = build_tradeoffs(rec, p)
+        recs.append(rec)
+
+    return recs
+
+
+def total_monthly_needed(recs: list[dict]) -> float:
+    return sum(r["monthly_needed"] for r in recs)
+
+
 def compute_health_score(p: UserProfile) -> dict:
     scores = {}
     details = {}
+    income = total_monthly_income(p)
+    surplus = monthly_surplus(p)
+    emis = total_monthly_emi(p)
 
-    total_monthly_income = p.monthly_income + p.other_income
-    monthly_surplus = total_monthly_income - p.monthly_expenses
-
-    # 1. Emergency fund (0-20)
-    months_covered = p.emergency_fund / p.monthly_expenses if p.monthly_expenses > 0 else 0
+    months_covered = p.emergency_fund / (p.monthly_expenses + emis) if (p.monthly_expenses + emis) > 0 else 0
     if months_covered >= 6:
         scores["emergency_fund"] = 20
-        details["emergency_fund"] = f"{months_covered:.1f} months covered — excellent."
+        details["emergency_fund"] = f"{months_covered:.1f} months covered. Strong safety buffer."
     elif months_covered >= 3:
         scores["emergency_fund"] = 13
-        details["emergency_fund"] = f"{months_covered:.1f} months covered — good, aim for 6."
+        details["emergency_fund"] = f"{months_covered:.1f} months covered. Good; aim for 6."
     elif months_covered >= 1:
         scores["emergency_fund"] = 6
-        details["emergency_fund"] = f"{months_covered:.1f} month(s) covered — build this up to 3-6 months."
+        details["emergency_fund"] = f"{months_covered:.1f} month(s) covered. Build this to 3-6 months."
     else:
         scores["emergency_fund"] = 0
-        details["emergency_fund"] = "No emergency fund — this is your first priority."
+        details["emergency_fund"] = "No emergency fund. This is your first priority."
 
-    # 2. Savings rate (0-20)
-    savings_rate = monthly_surplus / total_monthly_income if total_monthly_income > 0 else 0
+    savings_rate = surplus / income if income > 0 else 0
     if savings_rate >= 0.20:
         scores["savings_rate"] = 20
-        details["savings_rate"] = f"{savings_rate:.0%} savings rate — excellent discipline."
+        details["savings_rate"] = f"{savings_rate:.0%} savings rate after EMIs. Excellent discipline."
     elif savings_rate >= 0.15:
         scores["savings_rate"] = 15
-        details["savings_rate"] = f"{savings_rate:.0%} savings rate — good, push toward 20%."
+        details["savings_rate"] = f"{savings_rate:.0%} savings rate after EMIs. Good; push toward 20%."
     elif savings_rate >= 0.10:
         scores["savings_rate"] = 10
-        details["savings_rate"] = f"{savings_rate:.0%} savings rate — acceptable, room to improve."
+        details["savings_rate"] = f"{savings_rate:.0%} savings rate after EMIs. Acceptable, with room to improve."
     elif savings_rate >= 0.05:
         scores["savings_rate"] = 5
-        details["savings_rate"] = f"{savings_rate:.0%} savings rate — low, review expenses."
+        details["savings_rate"] = f"{savings_rate:.0%} savings rate after EMIs. Low; review expenses."
     else:
         scores["savings_rate"] = 0
-        details["savings_rate"] = f"{savings_rate:.0%} savings rate — critical. Expenses exceed or nearly match income."
+        details["savings_rate"] = f"{savings_rate:.0%} savings rate after EMIs. Cash flow needs attention."
 
-    # 3. Health insurance (0-15)
     if p.has_health_insurance:
         scores["health_insurance"] = 15
-        details["health_insurance"] = "Health insurance in place — good."
+        details["health_insurance"] = "Health insurance is in place."
     else:
         scores["health_insurance"] = 0
-        details["health_insurance"] = "No health insurance — a medical emergency could derail your entire plan."
+        details["health_insurance"] = "No health insurance. A medical emergency can derail the plan."
 
-    # 4. Life insurance (0-15)
-    # Recommended = 10x annual income = 120x monthly take-home
-    recommended_coverage = total_monthly_income * 120
+    recommended_coverage = income * 120
     if p.dependents == 0:
         scores["life_insurance"] = 15
-        details["life_insurance"] = "No dependents — life insurance not critical at this stage."
-    elif p.savings >= recommended_coverage:
+        details["life_insurance"] = "No dependents. Life insurance is not critical right now."
+    elif p.savings + p.existing_investments >= recommended_coverage:
         scores["life_insurance"] = 15
-        details["life_insurance"] = (
-            f"Savings of Rs.{p.savings:,.0f} exceed the recommended coverage of "
-            f"Rs.{recommended_coverage:,.0f} — dependents are financially protected."
-        )
+        details["life_insurance"] = "Savings and investments exceed the 10x annual income protection benchmark."
     elif p.life_insurance_coverage >= recommended_coverage:
         scores["life_insurance"] = 15
-        details["life_insurance"] = (
-            f"Life insurance coverage of Rs.{p.life_insurance_coverage:,.0f} meets "
-            f"the recommended 10x annual income (Rs.{recommended_coverage:,.0f})."
-        )
+        details["life_insurance"] = "Life cover meets the 10x annual income benchmark."
     elif p.life_insurance_coverage >= recommended_coverage * 0.5:
         shortfall = recommended_coverage - p.life_insurance_coverage
         scores["life_insurance"] = 8
-        details["life_insurance"] = (
-            f"Coverage of Rs.{p.life_insurance_coverage:,.0f} is below the recommended "
-            f"Rs.{recommended_coverage:,.0f}. Increase by Rs.{shortfall:,.0f}."
-        )
+        details["life_insurance"] = f"Life cover is partial. Increase by Rs.{shortfall:,.0f}."
     else:
         scores["life_insurance"] = 0
-        details["life_insurance"] = (
-            f"{p.dependents} dependent(s) with no adequate life insurance or savings. "
-            f"Recommended coverage: Rs.{recommended_coverage:,.0f} (10x annual income)."
-        )
+        details["life_insurance"] = f"{p.dependents} dependent(s) need stronger protection. Recommended cover: Rs.{recommended_coverage:,.0f}."
 
-    # 5. Goal feasibility (0-30)
-    total_monthly_needed = sum(
-        monthly_investment_needed(
-            g.target_amount, g.years,
-            get_allocation(g.years, p.risk_profile)["return"]
-        )
-        for g in p.goals
-    )
-    if total_monthly_needed == 0:
+    recs = goal_recommendations(p)
+    needed = total_monthly_needed(recs)
+    blocked_by_debt = high_interest_debt(p) > 0
+    if needed == 0:
         scores["goal_feasibility"] = 30
-        details["goal_feasibility"] = "No goals defined or all goals already funded."
-    elif total_monthly_needed <= monthly_surplus * 0.8:
+        details["goal_feasibility"] = "All goals are currently funded."
+    elif blocked_by_debt:
+        scores["goal_feasibility"] = 10 if needed <= max(0, surplus) else 0
+        details["goal_feasibility"] = "High-interest debt should be handled before full goal investing."
+    elif needed <= surplus * 0.8:
         scores["goal_feasibility"] = 30
-        details["goal_feasibility"] = "Current surplus comfortably covers all goals."
-    elif total_monthly_needed <= monthly_surplus:
+        details["goal_feasibility"] = "Current surplus comfortably covers all goal SIPs."
+    elif needed <= surplus:
         scores["goal_feasibility"] = 20
-        details["goal_feasibility"] = "Goals are achievable but leave little buffer — consider prioritising."
-    elif total_monthly_needed <= monthly_surplus * 1.25:
+        details["goal_feasibility"] = "Goals are achievable but leave little buffer."
+    elif needed <= surplus * 1.25:
         scores["goal_feasibility"] = 10
-        details["goal_feasibility"] = "Goals slightly exceed current capacity — extend timelines or reduce targets."
+        details["goal_feasibility"] = "Goals slightly exceed current capacity. Adjust timelines or targets."
     else:
         scores["goal_feasibility"] = 0
-        details["goal_feasibility"] = "Goals significantly exceed current capacity — restructuring needed."
+        details["goal_feasibility"] = "Goals significantly exceed current capacity."
 
     total = sum(scores.values())
     return {"total": total, "scores": scores, "details": details}
 
 
-# ── Per-goal recommendations ──────────────────────────────────────────────────
-def goal_recommendations(p: UserProfile) -> list[dict]:
-    recs = []
-    monthly_surplus = (p.monthly_income + p.other_income) - p.monthly_expenses
-
-    priority_order = {"high": 0, "medium": 1, "low": 2}
-    sorted_goals = sorted(p.goals, key=lambda g: (priority_order.get(g.priority, 1), g.years))
-
-    surplus_remaining = monthly_surplus
-
-    for g in sorted_goals:
-        alloc = get_allocation(g.years, p.risk_profile)
-        monthly_needed = monthly_investment_needed(g.target_amount, g.years, alloc["return"])
-        feasible = monthly_needed <= surplus_remaining
-        surplus_remaining = max(0, surplus_remaining - monthly_needed)
-
-        recs.append({
-            "name": g.name,
-            "target": g.target_amount,
-            "years": g.years,
-            "priority": g.priority,
-            "monthly_needed": monthly_needed,
-            "allocation": alloc,
-            "feasible": feasible,
-        })
-
-    return recs
-
-
-# ── Gap analysis ──────────────────────────────────────────────────────────────
 def gap_analysis(p: UserProfile) -> list[str]:
     gaps = []
-    total_monthly_income = p.monthly_income + p.other_income
-    monthly_surplus = total_monthly_income - p.monthly_expenses
-    recommended_coverage = total_monthly_income * 120
+    income = total_monthly_income(p)
+    surplus = monthly_surplus(p)
+    fixed_outflow = p.monthly_expenses + total_monthly_emi(p)
+    recommended_coverage = income * 120
 
-    if p.emergency_fund < p.monthly_expenses * 3:
-        months = p.emergency_fund / p.monthly_expenses if p.monthly_expenses > 0 else 0
-        needed = p.monthly_expenses * 3 - p.emergency_fund
+    if p.emergency_fund < fixed_outflow * 3:
+        months = p.emergency_fund / fixed_outflow if fixed_outflow > 0 else 0
+        needed = fixed_outflow * 3 - p.emergency_fund
         gaps.append(
-            f"Emergency fund is {months:.1f} months — you need at least 3. "
-            f"Top up by Rs.{needed:,.0f}. Park it in a liquid fund or high-yield savings account."
+            f"Emergency fund covers {months:.1f} months. Build at least 3 months by adding Rs.{needed:,.0f} "
+            "to a liquid fund, overnight fund, or savings account."
         )
 
     if not p.has_health_insurance:
         gaps.append(
-            "No health insurance. A single hospitalisation can wipe out years of savings. "
-            "Get at least Rs.10L individual / Rs.20L family floater cover."
+            "Buy health insurance before increasing risky investments. Start with at least Rs.10L individual "
+            "or Rs.20L family floater cover, then review based on city and family needs."
         )
 
-    if (p.dependents > 0
-            and p.life_insurance_coverage < recommended_coverage
-            and p.savings < recommended_coverage):
+    if p.dependents > 0 and p.life_insurance_coverage < recommended_coverage and p.savings + p.existing_investments < recommended_coverage:
         shortfall = recommended_coverage - max(p.life_insurance_coverage, 0)
         gaps.append(
-            f"You have {p.dependents} dependent(s) but insufficient life insurance coverage. "
-            f"Recommended: Rs.{recommended_coverage:,.0f} (10x annual income). "
-            f"Shortfall: Rs.{shortfall:,.0f}. Buy a pure term plan — avoid ULIPs/endowments."
+            f"Increase term life cover by about Rs.{shortfall:,.0f}. Prefer a pure term plan and avoid mixing "
+            "insurance with investments."
         )
 
-    if monthly_surplus <= 0:
+    if high_interest_debt(p) > 0:
         gaps.append(
-            "Monthly expenses equal or exceed income. No capacity to invest until expenses are reduced."
+            f"High-interest debt outstanding: Rs.{high_interest_debt(p):,.0f}. Route spare cash toward repayment "
+            "before starting or scaling discretionary equity SIPs."
         )
 
-    savings_rate = monthly_surplus / total_monthly_income if total_monthly_income > 0 else 0
-    if 0 < savings_rate < 0.10:
+    if surplus <= 0:
+        gaps.append("Expenses plus EMIs meet or exceed income. Reduce fixed outflows before funding new goals.")
+    else:
+        savings_rate = surplus / income if income > 0 else 0
+        if savings_rate < 0.10:
+            gaps.append(f"Savings rate after EMIs is {savings_rate:.0%}. Target 15-20% before adding low-priority goals.")
+
+    if p.tax_regime == "new":
         gaps.append(
-            f"Savings rate is {savings_rate:.0%}. Target at least 15-20% to build meaningful wealth."
+            "You selected the new tax regime. Treat ELSS, PPF, and NPS as investment choices first; do not assume "
+            "80C or 80CCD deductions unless your tax setup allows them."
         )
 
     return gaps
 
 
-# ── PDF report ────────────────────────────────────────────────────────────────
-DARK  = colors.HexColor("#1a1a1a")
-MID   = colors.HexColor("#444444")
+def action_plan(p: UserProfile, recs: list[dict], gaps: list[str]) -> list[dict]:
+    surplus = max(0, monthly_surplus(p))
+    fixed_outflow = p.monthly_expenses + total_monthly_emi(p)
+    ef_gap = max(0, fixed_outflow * 3 - p.emergency_fund)
+    top_goal = recs[0] if recs else None
+
+    plan = []
+    first_steps = []
+    if ef_gap > 0:
+        first_steps.append(f"Move Rs.{min(surplus, ef_gap):,.0f}/month toward the emergency fund.")
+    if not p.has_health_insurance:
+        first_steps.append("Shortlist and buy health insurance before adding new risky investments.")
+    if high_interest_debt(p) > 0:
+        first_steps.append("Freeze new low-priority SIPs and attack high-interest debt.")
+    if not first_steps:
+        first_steps.append("Start the high-priority goal SIPs immediately.")
+    plan.append({"period": "Next 30 days", "items": first_steps})
+
+    second_steps = []
+    if p.dependents > 0 and p.life_insurance_coverage < total_monthly_income(p) * 120:
+        second_steps.append("Close the term-insurance shortfall.")
+    if top_goal:
+        second_steps.append(f"Set up the first automated SIP for {top_goal['name']}: Rs.{top_goal['monthly_needed']:,.0f}/month.")
+    if p.tax_regime == "old":
+        second_steps.append("Review PPF/ELSS/NPS usage against remaining 80C and 80CCD room.")
+    else:
+        second_steps.append("Use tax-saving products only if they still fit the goal, lock-in, and liquidity needs.")
+    plan.append({"period": "Next 60 days", "items": second_steps})
+
+    third_steps = []
+    if recs:
+        total_needed = sum(r["monthly_needed"] for r in recs)
+        third_steps.append(f"Review whether total goal SIPs of Rs.{total_needed:,.0f}/month fit comfortably.")
+        third_steps.append("Rebalance goal allocations once a year or when income changes materially.")
+    third_steps.append("Update this plan after any job, EMI, family, or tax-regime change.")
+    plan.append({"period": "Next 90 days", "items": third_steps})
+    return plan
+
+
+def job_loss_buffer_months(p: UserProfile) -> float:
+    fixed_outflow = p.monthly_expenses + total_monthly_emi(p)
+    return (p.savings + p.emergency_fund) / fixed_outflow if fixed_outflow > 0 else 0
+
+
+def retirement_summary(p: UserProfile) -> dict:
+    years_to_retirement = max(0, p.retirement_age - p.age)
+    retirement_years = max(0, p.life_expectancy - p.retirement_age)
+    monthly_need_today = p.retirement_monthly_expenses or p.monthly_expenses
+    monthly_need_at_retirement = future_value(monthly_need_today, years_to_retirement, p.inflation_rate)
+    corpus_needed = monthly_need_at_retirement * 12 * retirement_years
+    annual_return = adjusted_return(get_allocation(max(1, years_to_retirement), p.risk_profile)["return"], p)
+    monthly_needed = monthly_investment_needed(corpus_needed, max(1, years_to_retirement), annual_return, p.retirement_corpus)
+    return {
+        "years_to_retirement": years_to_retirement,
+        "retirement_years": retirement_years,
+        "monthly_need_at_retirement": monthly_need_at_retirement,
+        "corpus_needed": corpus_needed,
+        "monthly_needed": monthly_needed,
+    }
+
+
+DARK = colors.HexColor("#1a1a1a")
+MID = colors.HexColor("#444444")
 LIGHT = colors.HexColor("#888888")
-RULE  = colors.HexColor("#dddddd")
+RULE = colors.HexColor("#dddddd")
 GREEN = colors.HexColor("#2d7d46")
 AMBER = colors.HexColor("#b45309")
-RED   = colors.HexColor("#b91c1c")
+RED = colors.HexColor("#b91c1c")
 
 
 def score_color(score: int) -> colors.HexColor:
     if score >= 70:
         return GREEN
-    elif score >= 45:
+    if score >= 45:
         return AMBER
     return RED
 
@@ -260,14 +470,21 @@ def score_color(score: int) -> colors.HexColor:
 def score_label(score: int) -> str:
     if score >= 70:
         return "Healthy"
-    elif score >= 45:
+    if score >= 45:
         return "Needs Attention"
     return "At Risk"
 
 
 def S(name, **kw):
-    base = dict(fontName="Helvetica", fontSize=10, leading=14,
-                textColor=DARK, spaceAfter=0, spaceBefore=0, alignment=TA_LEFT)
+    base = dict(
+        fontName="Helvetica",
+        fontSize=10,
+        leading=14,
+        textColor=DARK,
+        spaceAfter=0,
+        spaceBefore=0,
+        alignment=TA_LEFT,
+    )
     base.update(kw)
     return ParagraphStyle(name, **base)
 
@@ -278,8 +495,7 @@ def rule():
 
 def section(title):
     return [
-        Paragraph(title.upper(), S("sec", fontName="Helvetica-Bold", fontSize=8.5,
-                                   letterSpacing=1.2, spaceBefore=10, spaceAfter=2)),
+        Paragraph(title.upper(), S("sec", fontName="Helvetica-Bold", fontSize=8.5, letterSpacing=1.2, spaceBefore=10, spaceAfter=2)),
         rule(),
     ]
 
@@ -289,16 +505,25 @@ def sp(h=4):
 
 
 def b(text):
-    return Paragraph(f"• {text}", S("bul", fontSize=9.5, leading=13.5,
-                                    leftIndent=0, spaceAfter=2, alignment=TA_JUSTIFY))
+    return Paragraph(f"- {text}", S("bul", fontSize=9.5, leading=13.5, leftIndent=0, spaceAfter=2, alignment=TA_JUSTIFY))
 
 
-def generate_pdf(p: UserProfile, health: dict, recs: list[dict],
-                 gaps: list[str], output_path: str):
+def generate_pdf(
+    p: UserProfile,
+    health: dict,
+    recs: list[dict],
+    gaps: list[str],
+    output_path: str,
+    actions: Optional[list[dict]] = None,
+):
+    actions = actions or action_plan(p, recs, gaps)
     doc = SimpleDocTemplate(
-        output_path, pagesize=A4,
-        leftMargin=18*mm, rightMargin=18*mm,
-        topMargin=16*mm, bottomMargin=14*mm,
+        output_path,
+        pagesize=A4,
+        leftMargin=18 * mm,
+        rightMargin=18 * mm,
+        topMargin=16 * mm,
+        bottomMargin=14 * mm,
         title="Personal Financial Plan",
         author="Financial Planner",
     )
@@ -307,144 +532,127 @@ def generate_pdf(p: UserProfile, health: dict, recs: list[dict],
         return f"Rs. {n:,.0f}"
 
     story = []
-
-    # Title
-    story.append(Paragraph("Personal Financial Plan",
-                            S("title", fontName="Helvetica-Bold", fontSize=20,
-                              leading=24, alignment=TA_CENTER)))
+    story.append(Paragraph("Personal Financial Plan", S("title", fontName="Helvetica-Bold", fontSize=20, leading=24, alignment=TA_CENTER)))
     story.append(Paragraph(
-        f"Age {p.age}  |  {p.dependents} dependent(s)  |  {p.risk_profile.capitalize()} risk profile",
-        S("sub", fontSize=9, textColor=MID, alignment=TA_CENTER, spaceAfter=2)
+        f"Age {p.age} | {p.dependents} dependent(s) | {p.risk_profile.capitalize()} risk profile | {p.tax_regime.capitalize()} tax regime",
+        S("sub", fontSize=9, textColor=MID, alignment=TA_CENTER, spaceAfter=2),
     ))
     story.append(sp(6))
 
-    # Health score
     total = health["total"]
     col = score_color(total)
-    lbl = score_label(total)
-
     story += section("Financial Health Score")
     story.append(Paragraph(
         f'<font color="{col.hexval()}" size="32"><b>{total}</b></font>'
-        f'<font size="14" color="{col.hexval()}"> / 100 -- {lbl}</font>',
-        S("score", leading=40, spaceBefore=4, spaceAfter=6)
+        f'<font size="14" color="{col.hexval()}"> / 100 -- {score_label(total)}</font>',
+        S("score", leading=40, spaceBefore=4, spaceAfter=6),
     ))
 
-    score_rows = [["Category", "Score", "Max"]]
     maxes = {
-        "emergency_fund":  ("Emergency Fund",   20),
-        "savings_rate":    ("Savings Rate",      20),
-        "health_insurance":("Health Insurance",  15),
-        "life_insurance":  ("Life Insurance",    15),
-        "goal_feasibility":("Goal Feasibility",  30),
+        "emergency_fund": ("Emergency Fund", 20),
+        "savings_rate": ("Savings Rate", 20),
+        "health_insurance": ("Health Insurance", 15),
+        "life_insurance": ("Life Insurance", 15),
+        "goal_feasibility": ("Goal Feasibility", 30),
     }
+    score_rows = [["Category", "Score", "Max"]]
     for k, (label, max_v) in maxes.items():
         score_rows.append([label, str(health["scores"][k]), str(max_v)])
-
-    t = Table(score_rows, colWidths=[100*mm, 20*mm, 20*mm])
+    t = Table(score_rows, colWidths=[100 * mm, 20 * mm, 20 * mm])
     t.setStyle(TableStyle([
-        ("FONTNAME",       (0, 0), (-1, 0),  "Helvetica-Bold"),
-        ("FONTSIZE",       (0, 0), (-1, -1), 9),
-        ("TEXTCOLOR",      (0, 0), (-1, 0),  DARK),
-        ("TEXTCOLOR",      (0, 1), (-1, -1), MID),
-        ("ALIGN",          (1, 0), (-1, -1), "CENTER"),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("TEXTCOLOR", (0, 0), (-1, 0), DARK),
+        ("TEXTCOLOR", (0, 1), (-1, -1), MID),
+        ("ALIGN", (1, 0), (-1, -1), "CENTER"),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#f9f9f9"), colors.white]),
-        ("LINEBELOW",      (0, 0), (-1, 0),  0.5, RULE),
-        ("TOPPADDING",     (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING",  (0, 0), (-1, -1), 4),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.5, RULE),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]))
     story.append(t)
-    story.append(sp(4))
-
     for k in maxes:
         story.append(b(health["details"][k]))
-    story.append(sp(4))
 
-    # Gaps
     if gaps:
-        story += section("Priority Gaps to Address First")
+        story += section("Action Items")
         for g in gaps:
-            story.append(b(f"ACTION NEEDED: {g}"))
-        story.append(sp(4))
+            story.append(b(g))
 
-    # Goal recommendations
+    story += section("30 / 60 / 90 Day Plan")
+    for block in actions:
+        story.append(Paragraph(block["period"], S("ap", fontName="Helvetica-Bold", fontSize=10, spaceBefore=5)))
+        for item in block["items"]:
+            story.append(b(item))
+
     story += section("Goal Recommendations")
-
     for rec in recs:
         alloc = rec["allocation"]
-        feasibility = "Feasible" if rec["feasible"] else "Stretch -- consider extending timeline"
+        split = rec["asset_sip_split"]
+        feasibility = "Feasible" if rec["feasible"] else "Stretch -- adjust target, SIP, or timeline"
         col_hex = GREEN.hexval() if rec["feasible"] else AMBER.hexval()
-
-        equity_text = "; ".join(alloc["equity_instruments"][:2]) if alloc["equity"] > 0 else None
-        debt_text   = "; ".join(alloc["debt_instruments"][:2])
-        gold_text   = alloc["gold_instruments"][0] if alloc["gold"] > 0 else None
-
         items = [
             Paragraph(
-                f'<b>{rec["name"]}</b>  |  '
-                f'{rec["priority"].capitalize()} priority  |  '
-                f'{rec["years"]} year{"s" if rec["years"] != 1 else ""}',
-                S("gh", fontName="Helvetica-Bold", fontSize=10, spaceBefore=8, spaceAfter=2)
+                f'<b>{rec["name"]}</b> | {rec["priority"].capitalize()} priority | {rec["years"]} year{"s" if rec["years"] != 1 else ""}',
+                S("gh", fontName="Helvetica-Bold", fontSize=10, spaceBefore=8, spaceAfter=2),
             ),
             Paragraph(
-                f'Target: <b>{rs(rec["target"])}</b>  |  '
-                f'Monthly SIP: <b>{rs(rec["monthly_needed"])}</b>  |  '
-                f'<font color="{col_hex}">{feasibility}</font>',
-                S("gm", fontSize=9, textColor=MID, spaceAfter=4)
+                f'Today target: <b>{rs(rec["today_target"])}</b> | Future target: <b>{rs(rec["future_target"])}</b> | '
+                f'Monthly SIP: <b>{rs(rec["monthly_needed"])}</b> | <font color="{col_hex}">{feasibility}</font>',
+                S("gm", fontSize=9, textColor=MID, spaceAfter=4),
             ),
-            b(f"Strategy: {alloc['label']} -- expected return ~{alloc['return']*100:.1f}% p.a."),
+            b(f"Existing investments applied: {rs(rec['existing_applied'])}."),
+            b(f"Strategy: {alloc['label']} -- expected return ~{rec['return'] * 100:.1f}% p.a."),
             b(
-                f"Allocation: {alloc['equity']*100:.0f}% equity, "
-                f"{alloc['debt']*100:.0f}% debt, "
-                f"{alloc['gold']*100:.0f}% gold, "
-                f"{alloc['cash']*100:.0f}% cash/liquid."
+                f"Monthly split: {rs(split['equity'])} equity, {rs(split['debt'])} debt, "
+                f"{rs(split['gold'])} gold, {rs(split['cash'])} cash/liquid."
+            ),
+            b(
+                f"Allocation: {alloc['equity'] * 100:.0f}% equity, {alloc['debt'] * 100:.0f}% debt, "
+                f"{alloc['gold'] * 100:.0f}% gold, {alloc['cash'] * 100:.0f}% cash/liquid."
             ),
         ]
-        if equity_text:
-            items.append(b(f"Equity: {equity_text}."))
-        items.append(b(f"Debt: {debt_text}."))
-        if gold_text:
-            items.append(b(f"Gold: {gold_text}."))
-        items.append(sp(2))
-
         story.append(KeepTogether(items))
 
-    # Snapshot
-    story += section("Financial Snapshot")
-    total_monthly_income = p.monthly_income + p.other_income
-    monthly_surplus = total_monthly_income - p.monthly_expenses
-    savings_rate = monthly_surplus / total_monthly_income if total_monthly_income > 0 else 0
-    total_monthly_needed = sum(r["monthly_needed"] for r in recs)
+    ret = retirement_summary(p)
+    story += section("Retirement Check")
+    story.append(b(f"Estimated retirement corpus need: {rs(ret['corpus_needed'])}."))
+    story.append(b(f"Estimated retirement SIP need: {rs(ret['monthly_needed'])}/month."))
+    story.append(b(f"Estimated monthly expenses at retirement: {rs(ret['monthly_need_at_retirement'])}."))
 
+    story += section("Financial Snapshot")
+    surplus = monthly_surplus(p)
     snap_rows = [
-        ["Monthly salary",          rs(p.monthly_income)],
-        ["Other monthly income",    rs(p.other_income)],
-        ["Monthly expenses",        rs(p.monthly_expenses)],
-        ["Monthly surplus",         rs(monthly_surplus)],
-        ["Savings rate",            f"{savings_rate:.0%}"],
-        ["Total monthly SIP needed",rs(total_monthly_needed)],
-        ["Surplus after goals",     rs(max(0, monthly_surplus - total_monthly_needed))],
-        ["Current savings",         rs(p.savings)],
-        ["Emergency fund",          rs(p.emergency_fund)],
-        ["Existing investments",    rs(p.existing_investments)],
+        ["Monthly income", rs(total_monthly_income(p))],
+        ["Monthly expenses", rs(p.monthly_expenses)],
+        ["Monthly EMIs", rs(total_monthly_emi(p))],
+        ["Monthly surplus after EMIs", rs(surplus)],
+        ["Total monthly goal SIP needed", rs(total_monthly_needed(recs))],
+        ["Surplus after goals", rs(max(0, surplus - total_monthly_needed(recs)))],
+        ["Savings + emergency fund", rs(p.savings + p.emergency_fund)],
+        ["Existing investments", rs(p.existing_investments)],
+        ["Debt outstanding", rs(total_debt(p))],
+        ["Job-loss buffer", f"{job_loss_buffer_months(p):.1f} months"],
     ]
-    snap = Table(snap_rows, colWidths=[100*mm, 60*mm])
+    snap = Table(snap_rows, colWidths=[100 * mm, 60 * mm])
     snap.setStyle(TableStyle([
-        ("FONTSIZE",       (0, 0), (-1, -1), 9),
-        ("TEXTCOLOR",      (0, 0), (0, -1),  MID),
-        ("TEXTCOLOR",      (1, 0), (1, -1),  DARK),
-        ("FONTNAME",       (1, 0), (1, -1),  "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("TEXTCOLOR", (0, 0), (0, -1), MID),
+        ("TEXTCOLOR", (1, 0), (1, -1), DARK),
+        ("FONTNAME", (1, 0), (1, -1), "Helvetica-Bold"),
         ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.HexColor("#f9f9f9"), colors.white]),
-        ("TOPPADDING",     (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING",  (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]))
     story.append(snap)
-    story.append(sp(6))
 
-    story.append(Paragraph(
-        "This plan is generated for informational purposes only and does not constitute financial advice. "
-        "Consult a SEBI-registered investment adviser before making investment decisions.",
-        S("disc", fontSize=7.5, textColor=LIGHT, alignment=TA_CENTER)
-    ))
+    story += section("Assumptions and Guardrails")
+    story.append(b(f"Assumptions last reviewed: {LAST_UPDATED}; effective from {DATA_EFFECTIVE_FROM}."))
+    story.append(b(f"Inflation assumption: {p.inflation_rate * 100:.1f}% p.a.; return adjustment: {p.return_adjustment * 100:+.1f}% p.a."))
+    story.append(b(f"Key tax notes: {TAX_NOTES['equity_ltcg']} {TAX_NOTES['debt_mf']}"))
+    story.append(b("This app does not know your full tax status, liabilities, employer benefits, health conditions, existing asset allocation, or legal obligations."))
+    story.append(b("Consult a SEBI-registered investment adviser before making investment decisions."))
+    for source in DATA_SOURCES:
+        story.append(b(source))
 
     doc.build(story)

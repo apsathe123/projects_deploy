@@ -6,6 +6,14 @@ as of 2026. Based on Indian market conditions and available instruments.
 Used by engine.py to produce India-specific financial plans.
 """
 
+LAST_UPDATED = "2026-04-18"
+DATA_EFFECTIVE_FROM = "2026-04-01"
+DATA_SOURCES = [
+    "DEA small savings notification dated 2026-03-30 for Q1 FY 2026-27 rates.",
+    "RBI SGB 2023-24 notification dated 2023-12-11; no fresh SGB tranche is assumed.",
+    "Income Tax India capital gains references reflecting Finance (No. 2) Act, 2024 changes.",
+]
+
 INFLATION_INDIA = 0.055  # 5.5% long-run nominal inflation assumption (RBI target band 4±2%)
 
 # ── Expected returns by asset class (nominal CAGR, India) ─────────────────────
@@ -297,18 +305,20 @@ GOLD_INSTRUMENTS = {
         "Gold ETF (Nippon Gold ETF, SBI Gold ETF) — fully liquid, no lock-in; buy/sell on NSE/BSE.",
     ],
     "medium": [
-        "Sovereign Gold Bond (SGB) — best for 5+ year horizon; 2.5% p.a. interest + price appreciation; "
-        "capital gains tax-free at 8-year maturity. Buy at RBI IPO tranches for best price.",
+        "Sovereign Gold Bond (SGB) — best for 5+ year horizon if available through fresh issuance; "
+        "otherwise compare secondary-market SGB premiums/discounts with Gold ETFs. Existing SGBs carry "
+        "2.5% p.a. interest and capital gains are tax-free at 8-year maturity.",
         "Gold ETF — use if you may need to exit before 5 years; fully liquid.",
     ],
     "long": [
-        "Sovereign Gold Bond (SGB) — optimal choice; tax-free at maturity; 2.5% interest taxable annually "
-        "but still better than physical gold or ETFs.",
+        "Sovereign Gold Bond (SGB) — optimal if fresh issuance is available or secondary-market pricing "
+        "is reasonable; 2.5% interest is taxable annually and capital gains are tax-free at maturity.",
         "Gold ETF — for the portion you want to keep liquid (early exit option).",
     ],
     "vlong": [
-        "Sovereign Gold Bond (SGB) — buy consistently at every IPO tranche; reinvest at maturity. "
-        "The 2.5% interest + ~7% price appreciation = ~9.5% effective return, tax-free at maturity.",
+        "Sovereign Gold Bond (SGB) — use fresh tranches if available; otherwise buy only when secondary-market "
+        "pricing is sensible. Reinvest at maturity. The 2.5% interest plus gold appreciation can be attractive, "
+        "with capital gains tax-free at maturity.",
     ],
 }
 
