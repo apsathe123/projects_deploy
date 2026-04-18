@@ -346,6 +346,12 @@ def inject_css(theme: str, font_size: str):
         .alloc-gold {{ background:var(--pfp-gold); }}
         .alloc-cash {{ background:var(--pfp-cash); }}
         .small-note {{ color:var(--pfp-muted); font-size:0.9rem; }}
+        .pfp-card {{
+            border: 1px solid var(--pfp-track); border-radius: 12px;
+            padding: 16px; margin: 8px 0;
+        }}
+        .tag-good {{ background: rgba(22,101,52,0.12); color: var(--pfp-good); padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 600; }}
+        .tag-warn {{ background: rgba(161,98,7,0.12); color: var(--pfp-warn); padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 600; }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -568,7 +574,7 @@ if step == 0:
     st.write("Let's place the plan in your household context first.")
     col1, col2 = st.columns(2)
     with col1:
-        st.session_state.age = st.number_input("Your age", min_value=18, max_value=80, value=int(st.session_state.age))
+        st.session_state.age = st.select_slider("Your age", options=list(range(18, 81)), value=int(st.session_state.age))
     with col2:
         st.session_state.dependents = st.selectbox("Number of dependents", options=list(range(7)), index=int(st.session_state.dependents))
     if st.button("Next: Money In & Out →", type="primary"):
@@ -792,15 +798,15 @@ elif step == 5:
     st.header("6. Goals")
     st.caption("Quick-add targets are treated as today's cost and inflated automatically.")
     added_names = {g["name"] for g in st.session_state.goals}
-    cols = st.columns(4)
+    cols = st.columns(2)
     for i, sg in enumerate(SUGGESTED_GOALS):
         already_added = sg["name"] in added_names
-        with cols[i % 4]:
+        with cols[i % 2]:
             if st.button(
-                f"{'✓' if already_added else '+'} {sg['name']}",
+                f"{'✓' if already_added else '+'} {sg['name']} — {inr(sg['target'])} in {sg['years']} yr",
                 key=f"sg_{i}",
                 disabled=already_added,
-                help=f"Today's target: {inr(sg['target'])} in {sg['years']} years",
+                use_container_width=True,
             ):
                 st.session_state.goals.append({
                     "name": sg["name"],
@@ -1005,21 +1011,24 @@ elif step == 6:
         for rec in recs:
             alloc = rec["allocation"]
             split = rec["asset_sip_split"]
-            status = "Feasible" if rec["feasible"] else "Stretch"
-            header = (
-                f"{status} - {truncate(rec['name'])} - {inr(rec['monthly_needed'])}/mo - "
-                f"{rec['years']} yrs - {rec['priority'].capitalize()}"
+            tag = "<span class='tag-good'>Feasible</span>" if rec["feasible"] else "<span class='tag-warn'>Stretch</span>"
+            st.markdown(
+                f"<div class='pfp-card'>"
+                f"<div style='display:flex;justify-content:space-between;align-items:center'>"
+                f"<span style='font-size:16px;font-weight:700'>{truncate(rec['name'])} — {rec['priority'].capitalize()}</span>"
+                f"{tag}</div>"
+                f"<div style='font-size:13px;color:var(--pfp-muted);margin-top:4px'>"
+                f"{inr(rec['monthly_needed'])}/mo for {rec['years']} years → {inr(rec['future_target'])}"
+                f" (today: {inr(rec['today_target'])})</div>"
+                f"{alloc_bar(alloc['equity'], alloc['debt'], alloc['gold'], alloc['cash'])}"
+                f"</div>",
+                unsafe_allow_html=True,
             )
-            with st.expander(header):
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Today's target", inr(rec["today_target"]))
-                col2.metric("Future target", inr(rec["future_target"]))
-                col3.metric("Existing applied", inr(rec["existing_applied"]))
+            with st.expander("Details"):
                 col1, col2, col3 = st.columns(3)
                 col1.metric("Monthly SIP", inr(rec["monthly_needed"]))
                 col2.metric("Expected return", pct(rec["return"]))
-                col3.metric("Strategy", alloc["label"])
-                st.markdown(alloc_bar(alloc["equity"], alloc["debt"], alloc["gold"], alloc["cash"]), unsafe_allow_html=True)
+                col3.metric("Existing applied", inr(rec["existing_applied"]))
                 st.caption(alloc["rationale"])
 
                 st.markdown("**Monthly SIP split**")
