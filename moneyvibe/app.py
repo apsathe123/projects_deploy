@@ -26,7 +26,12 @@ from india_profiles import (
     RETURN_ASSUMPTIONS, TAX_NOTES, AGE_RISK_NOTES, suggested_risk_profile,
 )
 
-app = Flask(__name__)
+_dir = os.path.dirname(os.path.abspath(__file__))
+app = Flask(
+    __name__,
+    template_folder=os.path.join(_dir, "templates"),
+    static_folder=os.path.join(_dir, "static"),
+)
 app.secret_key = os.environ.get("FLASK_SECRET", "moneyvibe-dev-key-change-in-prod")
 
 STEPS = [
