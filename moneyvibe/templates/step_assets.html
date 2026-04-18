@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>What you own vs owe</h2>
+
+<form method="POST">
+    <div class="row">
+        <div class="form-group">
+            <label for="savings">Cash you can access right now (₹)</label>
+            <input type="number" id="savings" name="savings" step="5000" min="0" value="{{ s.get('savings', 0)|int }}">
+        </div>
+        <div class="form-group">
+            <label for="emergency_fund">Got money set aside for emergencies? (₹)</label>
+            <input type="number" id="emergency_fund" name="emergency_fund" step="5000" min="0" value="{{ s.get('emergency_fund', 0)|int }}">
+        </div>
+    </div>
+
+    <div class="form-group">
+        <label for="existing_investments">Any investments? MF, stocks, crypto, gold (₹)</label>
+        <input type="number" id="existing_investments" name="existing_investments" step="5000" min="0" value="{{ s.get('existing_investments', 0)|int }}">
+    </div>
+
+    <h3>Any loans or EMIs?</h3>
+    <p style="font-size:13px; color:var(--mv-text-dim)">Credit cards at 36% are literally eating your money. Kill them first.</p>
+
+    <div id="loans-container">
+        {% for loan in s.get('loans', []) %}
+        <div class="card loan-row" style="margin:8px 0">
+            <div class="row">
+                <div class="form-group">
+                    <label>What?</label>
+                    <input type="text" name="loan_name_{{ loop.index0 }}" value="{{ loan.name }}">
+                </div>
+                <div class="form-group">
+                    <label>How much left? (₹)</label>
+                    <input type="number" name="loan_balance_{{ loop.index0 }}" value="{{ loan.balance|int }}" min="0" step="5000">
+                </div>
+            </div>
+            <div class="row">
+                <div class="form-group">
+                    <label>Interest % / year</label>
+                    <input type="number" name="loan_rate_{{ loop.index0 }}" value="{{ (loan.annual_rate * 100)|round(1) }}" min="0" step="0.5">
+                </div>
+                <div class="form-group">
+                    <label>Monthly EMI (₹)</label>
+                    <input type="number" name="loan_emi_{{ loop.index0 }}" value="{{ loan.monthly_emi|int }}" min="0" step="500">
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <button type="button" class="btn btn-ghost" onclick="addLoan()">+ Add a loan or EMI</button>
+
+    <div class="btn-row">
+        <a href="{{ url_for('money') }}" class="btn btn-secondary">← Back</a>
+        <button type="submit" class="btn btn-primary">Next →</button>
+    </div>
+</form>
+
+<script>
+let loanCount = {{ s.get('loans', [])|length }};
+function addLoan() {
+    const c = document.getElementById('loans-container');
+    const i = loanCount++;
+    c.insertAdjacentHTML('beforeend', `
+    <div class="card loan-row" style="margin:8px 0">
+        <div class="row">
+            <div class="form-group"><label>What?</label><input type="text" name="loan_name_${i}" value="Credit card"></div>
+            <div class="form-group"><label>How much left? (₹)</label><input type="number" name="loan_balance_${i}" value="20000" min="0" step="5000"></div>
+        </div>
+        <div class="row">
+            <div class="form-group"><label>Interest % / year</label><input type="number" name="loan_rate_${i}" value="36" min="0" step="0.5"></div>
+            <div class="form-group"><label>Monthly EMI (₹)</label><input type="number" name="loan_emi_${i}" value="2000" min="0" step="500"></div>
+        </div>
+    </div>`);
+}
+</script>
+{% endblock %}

@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>About you</h2>
+
+<form method="POST">
+    <div class="row">
+        <div class="form-group">
+            <label for="age">How old are you?</label>
+            <input type="range" id="age" name="age" min="18" max="30" value="{{ s.get('age', 22) }}"
+                   oninput="document.getElementById('age-val').textContent = this.value">
+            <div style="text-align:center; font-family:'JetBrains Mono'; font-size:24px; font-weight:700; margin:8px 0">
+                <span id="age-val">{{ s.get('age', 22) }}</span> years
+            </div>
+        </div>
+        <div class="form-group">
+            <label for="dependents">Anyone depending on your money?</label>
+            <select id="dependents" name="dependents">
+                <option value="0" {% if s.get('dependents', 0) == 0 %}selected{% endif %}>Just me</option>
+                <option value="1" {% if s.get('dependents', 0) == 1 %}selected{% endif %}>1 person</option>
+                <option value="2" {% if s.get('dependents', 0) == 2 %}selected{% endif %}>2 people</option>
+                <option value="3" {% if s.get('dependents', 0) == 3 %}selected{% endif %}>3 people</option>
+                <option value="4" {% if s.get('dependents', 0) == 4 %}selected{% endif %}>4 people</option>
+            </select>
+        </div>
+    </div>
+
+    <div class="form-group">
+        <label>
+            <input type="checkbox" name="is_student" {% if s.get('is_student') %}checked{% endif %}>
+            I'm a student
+        </label>
+    </div>
+
+    <button type="submit" class="btn btn-primary btn-full">Let's go →</button>
+</form>
+{% endblock %}

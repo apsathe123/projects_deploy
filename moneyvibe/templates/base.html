@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MoneyVibe — Your money era, visualised.</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✦</text></svg>">
+</head>
+<body>
+    <div class="container">
+        <!-- Progress bar -->
+        <div class="progress-bar">
+            <div class="progress-fill" style="width: {{ ((current_step + 1) / steps|length * 100)|int }}%"></div>
+        </div>
+        <div class="step-label">Step {{ current_step + 1 }} of {{ steps|length }} — {{ steps[current_step][1] }}</div>
+
+        <!-- Header -->
+        <h1>✦ MoneyVibe</h1>
+        <p style="color: var(--mv-text-dim); margin-bottom: 32px;">Your money era, visualised.</p>
+
+        <!-- Flash messages -->
+        {% with messages = get_flashed_messages() %}
+        {% if messages %}
+        {% for msg in messages %}
+        <div class="flash">{{ msg }}</div>
+        {% endfor %}
+        {% endif %}
+        {% endwith %}
+
+        <!-- Content -->
+        {% block content %}{% endblock %}
+
+        <!-- Footer -->
+        <div class="footer">
+            MoneyVibe · Not financial advice — consult a SEBI-registered investment adviser.
+        </div>
+    </div>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

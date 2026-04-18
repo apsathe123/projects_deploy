@@ -1,0 +1,198 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Your playbook</h2>
+
+<!-- ═══ MONEY SCORE + NEXT MOVE ═══ -->
+<div class="row" style="margin-bottom:24px">
+    <div class="card score-card">
+        <div class="score-num" id="score-counter" data-target="{{ health.total }}">0</div>
+        <div class="tier-badge" style="border-color: {{ tier.color }}">
+            <span class="pulse"></span>{{ tier.tier }} · {{ tier.tagline }}
+        </div>
+        <div style="margin-top:12px; font-size:14px; color:var(--mv-text-dim)">
+            {{ playbook.personality.label }}
+        </div>
+    </div>
+    <div class="next-move">
+        <div class="micro"><span class="pulse"></span>YOUR NEXT MOVE</div>
+        <div class="next-headline">{{ playbook.next_move.headline }}</div>
+        <div class="next-why">{{ playbook.next_move.why }}</div>
+    </div>
+</div>
+
+<!-- ═══ KEY METRICS ═══ -->
+<div class="metric-grid" style="margin-bottom:24px">
+    <div class="tile">
+        <div class="metric-label">Monthly surplus</div>
+        <div class="metric-value">{{ inr(surplus) }}</div>
+    </div>
+    <div class="tile">
+        <div class="metric-label">SIPs needed</div>
+        <div class="metric-value">{{ inr(needed) }}</div>
+    </div>
+    <div class="tile">
+        <div class="metric-label">Buffer</div>
+        <div class="metric-value">{{ "%.1f"|format(buffer_months) }} mo</div>
+    </div>
+</div>
+
+<!-- ═══ SCORE RINGS ═══ -->
+<div class="rings">
+    {% set cats = [
+        ("Emergency fund", "emergency_fund", 20),
+        ("Savings rate", "savings_rate", 20),
+        ("Health insurance", "health_insurance", 15),
+        ("Life insurance", "life_insurance", 15),
+        ("Goal power", "goal_feasibility", 30),
+    ] %}
+    {% for label, key, max_v in cats %}
+    {% set s = health.scores[key] %}
+    {% set pct_val = (s / max_v * 100)|int if max_v > 0 else 0 %}
+    {% set r = 22 %}
+    {% set circ = 138 %}
+    {% set offset = circ * (1 - s / max_v) if max_v > 0 else circ %}
+    {% set color = "#00E5B8" if pct_val >= 70 else "#FFB800" if pct_val >= 40 else "#FF3366" %}
+    <div class="ring">
+        <svg width="68" height="68" viewBox="0 0 68 68">
+            <circle cx="34" cy="34" r="{{ r }}" fill="none" stroke="var(--mv-border)" stroke-width="6"/>
+            <circle cx="34" cy="34" r="{{ r }}" fill="none" stroke="{{ color }}" stroke-width="6"
+                stroke-dasharray="{{ circ }}" stroke-dashoffset="{{ offset|round(1) }}" stroke-linecap="round"
+                transform="rotate(-90 34 34)"/>
+            <text x="34" y="32" text-anchor="middle" fill="{{ color }}"
+                font-family="JetBrains Mono" font-size="14" font-weight="700">{{ s }}</text>
+            <text x="34" y="44" text-anchor="middle" fill="var(--mv-text-dim)"
+                font-family="Inter" font-size="9">/{{ max_v }}</text>
+        </svg>
+        <div class="ring-label">{{ label }}</div>
+    </div>
+    {% endfor %}
+</div>
+
+<details>
+    <summary>What drives your score?</summary>
+    <div class="content">
+        {% for label, key, max_v in cats %}
+        <p><strong>{{ label }}:</strong> {{ health.details[key] }}</p>
+        {% endfor %}
+    </div>
+</details>
+
+<!-- ═══ MILESTONE BADGES ═══ -->
+<div class="badges">
+    {% for b in badges %}
+    <span class="badge {{ 'unlocked' if b.unlocked else 'locked' }}" title="{{ b.tooltip }}">
+        <span class="badge-dot">{{ '✓' if b.unlocked else '○' }}</span>
+        {{ b.name }}
+    </span>
+    {% endfor %}
+</div>
+
+<!-- ═══ PEER COMPARISON ═══ -->
+{% set income = profile.monthly_income + profile.other_income %}
+{% set sr = (surplus / income * 100)|int if income > 0 else 0 %}
+{% if sr > 8 %}
+<div class="success-box">You save {{ sr }}% of your income — the average 22-year-old saves about 8%.</div>
+{% endif %}
+{% set ef_mo = (profile.emergency_fund / profile.monthly_expenses)|round(1) if profile.monthly_expenses > 0 else 0 %}
+{% if ef_mo >= 3 %}
+<div class="success-box">You have an emergency fund — only ~23% of people your age do.</div>
+{% endif %}
+
+<!-- ═══ GOAL CARDS ═══ -->
+<h2>Goal Recommendations ({{ recs|length }} goals)</h2>
+
+{% for rec in recs %}
+{% set alloc = rec.allocation %}
+{% set split = rec.asset_sip_split %}
+{% set bar = alloc_bar_data(alloc) %}
+<div class="goal-card">
+    <div class="goal-header">
+        <div>
+            {% set emoji = "🎯" %}
+            {% for sg in suggested %}{% if sg.name == rec.name %}{% set emoji = sg.emoji %}{% endif %}{% endfor %}
+            <span style="font-family:'Space Grotesk'; font-size:18px; font-weight:600">{{ emoji }} {{ rec.name }}</span>
+            <div class="goal-meta">{{ rec.years }} years · {{ rec.priority }} priority · {{ alloc.label }}</div>
+        </div>
+        {% if rec.feasible %}
+        <span class="status-on">ON TRACK</span>
+        {% else %}
+        <span class="status-stretch">STRETCH</span>
+        {% endif %}
+    </div>
+    <div class="metric-grid">
+        <div class="tile"><div class="metric-label">Today's target</div><div class="metric-value">{{ inr(rec.today_target) }}</div></div>
+        <div class="tile"><div class="metric-label">Monthly SIP</div><div class="metric-value">{{ inr(rec.monthly_needed) }}</div></div>
+        <div class="tile"><div class="metric-label">Expected return</div><div class="metric-value">{{ pct(rec['return']) }}</div></div>
+    </div>
+    <div class="alloc-bar">
+        {% for share, cls, label in bar %}
+        {% if share > 0 %}
+        <div class="alloc-{{ cls }}" style="width:{{ (share * 100)|int }}%" title="{{ label }}"></div>
+        {% endif %}
+        {% endfor %}
+    </div>
+    <div class="alloc-legend">
+        {% for share, cls, label in bar %}{% if share > 0 %}
+        <span class="alloc-{{ cls }}">●</span> {{ label }}&nbsp;&nbsp;
+        {% endif %}{% endfor %}
+    </div>
+    {% if not rec.feasible %}
+    <div class="info-box" style="margin-top:12px">
+        Extend by 2 years: {{ inr(rec.tradeoffs.extend_by_2_years) }}/mo.
+        Reduce target 10%: {{ inr(rec.tradeoffs.reduce_target_10pct) }}/mo.
+        {% if rec.tradeoffs.higher_risk_profile_sip < rec.monthly_needed %}
+        Or go bolder: {{ inr(rec.tradeoffs.higher_risk_profile_sip) }}/mo.
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endfor %}
+
+<!-- ═══ ACTION PLAN ═══ -->
+<h2>Action Plan</h2>
+
+{% if gaps %}
+<h3 style="color:var(--mv-coral)">Fix these first</h3>
+{% for gap in gaps %}
+<div class="warning">{{ gap }}</div>
+{% endfor %}
+{% endif %}
+
+{% for action_block in actions %}
+<div class="action-block">
+    <h3>{{ action_block["period"] }}</h3>
+    <ul>
+        {% for item in action_block["items"] %}
+        <li>{{ item }}</li>
+        {% endfor %}
+    </ul>
+</div>
+{% endfor %}
+
+<!-- ═══ RETIREMENT ═══ -->
+{% if retirement and not is_student %}
+<h2>Retirement check</h2>
+<div class="metric-grid">
+    <div class="tile"><div class="metric-label">Years to go</div><div class="metric-value">{{ retirement.years_to_retirement }}</div></div>
+    <div class="tile"><div class="metric-label">Corpus needed</div><div class="metric-value">{{ inr(retirement.corpus_needed) }}</div></div>
+    <div class="tile"><div class="metric-label">Monthly SIP</div><div class="metric-value">{{ inr(retirement.monthly_needed) }}/mo</div></div>
+</div>
+{% endif %}
+
+<!-- ═══ DOWNLOAD & GUARDRAILS ═══ -->
+<div style="margin:32px 0">
+    <a href="{{ url_for('download_pdf') }}" class="btn btn-primary btn-full">Save as PDF</a>
+</div>
+
+<details>
+    <summary>Assumptions & guardrails</summary>
+    <div class="content">
+        <p style="color:var(--mv-text-dim); font-size:13px">Not financial advice. Consult a SEBI-registered investment adviser before making investment decisions.</p>
+    </div>
+</details>
+
+<div class="btn-row" style="margin-top:32px">
+    <a href="{{ url_for('goals') }}" class="btn btn-secondary">← Back to Goals</a>
+    <a href="{{ url_for('reset') }}" class="btn btn-ghost">Start over</a>
+</div>
+{% endblock %}

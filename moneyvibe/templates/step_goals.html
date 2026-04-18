@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Main character goals</h2>
+<p style="color:var(--mv-text-dim); margin-bottom:16px">Pick what matters. Targets are in today's rupees — we'll inflate them.</p>
+
+<!-- Quick-add grid -->
+<div class="goal-grid">
+    {% set added_names = s.get('goals', [])|map(attribute='name')|list %}
+    {% for sg in suggested %}
+    {% if not is_student or sg.target <= 50000 %}
+    <form method="POST" style="margin:0">
+        <input type="hidden" name="action" value="add_suggested_{{ loop.index0 }}">
+        <button type="submit" class="goal-btn {% if sg.name in added_names %}added{% endif %}"
+                {% if sg.name in added_names %}disabled{% endif %}>
+            <div class="goal-emoji">{% if sg.name in added_names %}✓{% else %}{{ sg.emoji }}{% endif %}</div>
+            <div class="goal-name">{{ sg.name }}</div>
+            <div class="goal-amt">{{ inr(sg.target) }} · {{ sg.years }} yr</div>
+        </button>
+    </form>
+    {% endif %}
+    {% endfor %}
+</div>
+
+<!-- Current goals -->
+{% if s.get('goals', [])|length == 0 %}
+<p style="color:var(--mv-text-dim); text-align:center; margin:24px 0">No goals yet. Pick at least one above.</p>
+{% else %}
+<form method="POST" id="goals-form">
+    <input type="hidden" name="action" value="update_goals">
+    {% for g in s.get('goals', []) %}
+    <div class="card" style="margin:8px 0">
+        <div class="row">
+            <div class="form-group">
+                <label>Goal</label>
+                <input type="text" name="goal_name_{{ loop.index0 }}" value="{{ g.name }}">
+            </div>
+            <div class="form-group">
+                <label>Amount (₹)</label>
+                <input type="number" name="goal_target_{{ loop.index0 }}" value="{{ g.target|int }}" min="0" step="5000">
+            </div>
+            <div class="form-group">
+                <label>Years</label>
+                <input type="number" name="goal_years_{{ loop.index0 }}" value="{{ g.years }}" min="1" max="50">
+            </div>
+            <div class="form-group">
+                <label>Priority</label>
+                <select name="goal_priority_{{ loop.index0 }}">
+                    <option value="High" {% if g.priority == 'High' %}selected{% endif %}>High</option>
+                    <option value="Medium" {% if g.priority == 'Medium' %}selected{% endif %}>Medium</option>
+                    <option value="Low" {% if g.priority == 'Low' %}selected{% endif %}>Low</option>
+                </select>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+
+    <div class="btn-row">
+        <a href="{{ url_for('risk') }}" class="btn btn-secondary">← Back</a>
+        <button type="submit" class="btn btn-primary">Show me the plan →</button>
+    </div>
+</form>
+{% endif %}
+
+<!-- Add custom goal -->
+<form method="POST" style="margin-top:8px">
+    <input type="hidden" name="action" value="add_custom">
+    <button type="submit" class="btn btn-ghost">+ Add custom goal</button>
+</form>
+
+<!-- Remove goal forms -->
+{% for g in s.get('goals', []) %}
+<form method="POST" style="display:inline">
+    <input type="hidden" name="action" value="remove_{{ loop.index0 }}">
+</form>
+{% endfor %}
+
+{% if s.get('goals', [])|length == 0 %}
+<div class="btn-row">
+    <a href="{{ url_for('risk') }}" class="btn btn-secondary">← Back</a>
+</div>
+{% endif %}
+{% endblock %}

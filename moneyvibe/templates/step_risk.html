@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Your risk vibe</h2>
+
+<div class="info-box">
+    At {{ s.get('age', 22) }}, you're in <strong>{{ age_risk|capitalize }}</strong> mode — {{ age_risk_notes[age_risk] }}
+</div>
+
+<form method="POST">
+    <div class="row">
+        <div class="form-group">
+            <label for="risk_capacity_score">Income stability</label>
+            <select id="risk_capacity_score" name="risk_capacity_score">
+                <option value="0" {% if s.get('risk_capacity_score', 2) == 0 %}selected{% endif %}>Fragile</option>
+                <option value="1" {% if s.get('risk_capacity_score', 2) == 1 %}selected{% endif %}>Cautious</option>
+                <option value="2" {% if s.get('risk_capacity_score', 2) == 2 %}selected{% endif %}>Comfortable</option>
+                <option value="3" {% if s.get('risk_capacity_score', 2) == 3 %}selected{% endif %}>Very strong</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label for="risk_tolerance_score">If your investments dropped 30%?</label>
+            <select id="risk_tolerance_score" name="risk_tolerance_score">
+                <option value="0" {% if s.get('risk_tolerance_score', 2) == 0 %}selected{% endif %}>Sell quickly</option>
+                <option value="1" {% if s.get('risk_tolerance_score', 2) == 1 %}selected{% endif %}>Lose sleep</option>
+                <option value="2" {% if s.get('risk_tolerance_score', 2) == 2 %}selected{% endif %}>Stay invested</option>
+                <option value="3" {% if s.get('risk_tolerance_score', 2) == 3 %}selected{% endif %}>Invest more</option>
+            </select>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="form-group">
+            <label for="tax_regime">Tax regime</label>
+            <select id="tax_regime" name="tax_regime">
+                <option value="new" {% if s.get('tax_regime', 'new') == 'new' %}selected{% endif %}>New</option>
+                <option value="old" {% if s.get('tax_regime') == 'old' %}selected{% endif %}>Old</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label for="chosen_risk_profile">Preferred risk profile</label>
+            <select id="chosen_risk_profile" name="chosen_risk_profile">
+                <option value="conservative" {% if s.get('chosen_risk_profile') == 'conservative' %}selected{% endif %}>Conservative</option>
+                <option value="moderate" {% if s.get('chosen_risk_profile') == 'moderate' %}selected{% endif %}>Moderate</option>
+                <option value="aggressive" {% if s.get('chosen_risk_profile', 'aggressive') == 'aggressive' %}selected{% endif %}>Aggressive</option>
+            </select>
+        </div>
+    </div>
+
+    {% if not is_student %}
+    <details>
+        <summary>Retirement & assumptions</summary>
+        <div class="content">
+            <div class="row">
+                <div class="form-group">
+                    <label for="retirement_age">Retirement age</label>
+                    <input type="number" id="retirement_age" name="retirement_age" min="45" max="75" value="{{ s.get('retirement_age', 60) }}">
+                </div>
+                <div class="form-group">
+                    <label for="life_expectancy">Life expectancy</label>
+                    <input type="number" id="life_expectancy" name="life_expectancy" min="65" max="100" value="{{ s.get('life_expectancy', 85) }}">
+                    <div class="help">India's average is ~70, but plan for living longer. 85 covers the 90th percentile.</div>
+                </div>
+            </div>
+            <div class="row">
+                <div class="form-group">
+                    <label for="retirement_monthly_expenses">Monthly retirement expenses (today's ₹)</label>
+                    <input type="number" id="retirement_monthly_expenses" name="retirement_monthly_expenses" min="0" step="5000" value="{{ s.get('retirement_monthly_expenses', 0)|int }}">
+                </div>
+                <div class="form-group">
+                    <label for="retirement_corpus">Current retirement corpus (₹)</label>
+                    <input type="number" id="retirement_corpus" name="retirement_corpus" min="0" step="50000" value="{{ s.get('retirement_corpus', 0)|int }}">
+                </div>
+            </div>
+            <div class="row">
+                <div class="form-group">
+                    <label for="epf_balance">EPF balance (₹)</label>
+                    <input type="number" id="epf_balance" name="epf_balance" min="0" step="50000" value="{{ s.get('epf_balance', 0)|int }}">
+                </div>
+                <div class="form-group">
+                    <label for="ppf_balance">PPF balance (₹)</label>
+                    <input type="number" id="ppf_balance" name="ppf_balance" min="0" step="50000" value="{{ s.get('ppf_balance', 0)|int }}">
+                </div>
+                <div class="form-group">
+                    <label for="nps_balance">NPS balance (₹)</label>
+                    <input type="number" id="nps_balance" name="nps_balance" min="0" step="50000" value="{{ s.get('nps_balance', 0)|int }}">
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="inflation_rate_pct">Inflation % p.a.</label>
+                <input type="number" id="inflation_rate_pct" name="inflation_rate_pct" min="0" max="12" step="0.1" value="{{ s.get('inflation_rate_pct', 5.5) }}">
+            </div>
+        </div>
+    </details>
+    {% endif %}
+
+    <div class="btn-row">
+        <a href="{{ url_for('protect') }}" class="btn btn-secondary">← Back</a>
+        <button type="submit" class="btn btn-primary">Next →</button>
+    </div>
+</form>
+{% endblock %}
