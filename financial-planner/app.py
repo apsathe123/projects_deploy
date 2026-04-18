@@ -393,9 +393,71 @@ def build_profile() -> UserProfile:
     )
 
 
+STEP_KEYS: dict[int, list[str]] = {
+    0: ["age", "dependents"],
+    1: ["monthly_income", "other_income", "monthly_expenses"],
+    2: ["savings", "emergency_fund", "existing_investments", "investment_type", "auto_allocate_existing", "loans"],
+    3: ["has_health_insurance", "life_cover_option", "life_insurance_coverage"],
+    4: [
+        "risk_capacity_score", "risk_tolerance_score", "tax_regime",
+        "chosen_risk_profile", "effective_risk_profile",
+        "inflation_rate_pct", "return_adjustment_pct",
+        "retirement_age", "life_expectancy", "retirement_monthly_expenses", "retirement_corpus",
+    ],
+    5: ["goals"],
+    6: ["plan"],
+}
+
+
 def goto(step_delta: int):
     st.session_state.current_step = min(max(0, st.session_state.current_step + step_delta), len(STEPS) - 1)
     st.rerun()
+
+
+def reset_step(step_index: int):
+    """Reset only the fields belonging to *step_index* back to their defaults."""
+    defaults = _all_defaults()
+    for key in STEP_KEYS.get(step_index, []):
+        if key in defaults:
+            st.session_state[key] = defaults[key]
+
+
+def reset_all():
+    """Clear the entire session state and restart at step 0."""
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+
+
+def _all_defaults() -> dict:
+    return {
+        "age": 30,
+        "dependents": 0,
+        "monthly_income": 100000.0,
+        "other_income": 0.0,
+        "monthly_expenses": 60000.0,
+        "savings": 200000.0,
+        "emergency_fund": 0.0,
+        "existing_investments": 0.0,
+        "investment_type": "None",
+        "has_health_insurance": "Yes",
+        "life_cover_option": "No",
+        "life_insurance_coverage": 0.0,
+        "tax_regime": "New",
+        "chosen_risk_profile": "Moderate",
+        "effective_risk_profile": "moderate",
+        "risk_capacity_score": 2,
+        "risk_tolerance_score": 2,
+        "auto_allocate_existing": False,
+        "inflation_rate_pct": INFLATION_INDIA * 100,
+        "return_adjustment_pct": 0.0,
+        "retirement_age": 60,
+        "life_expectancy": 85,
+        "retirement_monthly_expenses": 0.0,
+        "retirement_corpus": 0.0,
+        "goals": [],
+        "loans": [],
+        "plan": None,
+    }
 
 
 load_query_params_once()
@@ -414,6 +476,17 @@ with st.sidebar:
         if st.button(f"{marker} {i + 1}. {step}", key=f"nav_{i}", use_container_width=True):
             st.session_state.current_step = i
             st.rerun()
+    st.divider()
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Reset page", use_container_width=True, help="Reset this step's fields to defaults"):
+            reset_step(st.session_state.current_step)
+            st.toast(f"Step {st.session_state.current_step + 1} reset to defaults.")
+            st.rerun()
+    with col2:
+        if st.button("Reset all", use_container_width=True, type="secondary", help="Clear everything and start over"):
+            reset_all()
+            st.rerun()
 
 inject_css(theme, font_size)
 
@@ -428,10 +501,10 @@ if step == 0:
     st.write("Let's place the plan in your household context first.")
     col1, col2 = st.columns(2)
     with col1:
-        st.number_input("Your age", min_value=18, max_value=80, key="age")
+        st.session_state.age = st.number_input("Your age", min_value=18, max_value=80, value=int(st.session_state.age))
     with col2:
-        st.selectbox("Number of dependents", options=list(range(7)), key="dependents")
-    if st.button("Next: Money In & Out", type="primary"):
+        st.session_state.dependents = st.selectbox("Number of dependents", options=list(range(7)), index=int(st.session_state.dependents))
+    if st.button("Next: Money In & Out →", type="primary"):
         goto(1)
 
 
@@ -439,14 +512,14 @@ elif step == 1:
     st.header("2. Money In & Out")
     col1, col2 = st.columns(2)
     with col1:
-        st.number_input("Monthly take-home salary (₹)", min_value=0.0, step=5000.0, key="monthly_income")
-        st.number_input("Other monthly income (₹)", min_value=0.0, step=1000.0, key="other_income")
+        st.session_state.monthly_income = st.number_input("Monthly take-home salary (₹)", min_value=0.0, step=5000.0, value=float(st.session_state.monthly_income))
+        st.session_state.other_income = st.number_input("Other monthly income (₹)", min_value=0.0, step=1000.0, value=float(st.session_state.other_income))
     with col2:
-        st.number_input(
+        st.session_state.monthly_expenses = st.number_input(
             "Monthly expenses before EMIs (₹)",
             min_value=0.0,
             step=5000.0,
-            key="monthly_expenses",
+            value=float(st.session_state.monthly_expenses),
             help="Rent, groceries, transport, school fees, subscriptions, and regular spending. Put loan EMIs in the next step.",
         )
     total_income = st.session_state.monthly_income + st.session_state.other_income
@@ -457,27 +530,28 @@ elif step == 1:
     col3.metric("Annual income", inr(total_income * 12))
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("Back"):
+        if st.button("← Back"):
             goto(-1)
     with col2:
-        if st.button("Next: Assets & Loans", type="primary"):
+        if st.button("Next: Assets & Loans →", type="primary"):
             goto(1)
 
 
 elif step == 2:
     st.header("3. Assets & Loans")
+    _inv_types = ["None", "Mutual Funds", "Stocks / ETFs", "Pension / PPF / EPF", "Property", "Bonds / FD", "Mixed"]
     col1, col2 = st.columns(2)
     with col1:
-        st.number_input("Savings / liquid cash (₹)", min_value=0.0, step=10000.0, key="savings")
-        st.number_input("Emergency fund (₹)", min_value=0.0, step=10000.0, key="emergency_fund")
+        st.session_state.savings = st.number_input("Savings / liquid cash (₹)", min_value=0.0, step=10000.0, value=float(st.session_state.savings))
+        st.session_state.emergency_fund = st.number_input("Emergency fund (₹)", min_value=0.0, step=10000.0, value=float(st.session_state.emergency_fund))
     with col2:
-        st.number_input("Existing investments (₹)", min_value=0.0, step=10000.0, key="existing_investments")
-        st.selectbox(
+        st.session_state.existing_investments = st.number_input("Existing investments (₹)", min_value=0.0, step=10000.0, value=float(st.session_state.existing_investments))
+        st.session_state.investment_type = st.selectbox(
             "Type of existing investments",
-            ["None", "Mutual Funds", "Stocks / ETFs", "Pension / PPF / EPF", "Property", "Bonds / FD", "Mixed"],
-            key="investment_type",
+            _inv_types,
+            index=_inv_types.index(st.session_state.investment_type) if st.session_state.investment_type in _inv_types else 0,
         )
-        st.checkbox("Auto-apply unassigned investments to high-priority goals", key="auto_allocate_existing")
+        st.session_state.auto_allocate_existing = st.checkbox("Auto-apply unassigned investments to high-priority goals", value=bool(st.session_state.auto_allocate_existing))
 
     st.subheader("Loans & EMIs")
     st.caption("High-interest debt gets priority over discretionary investing.")
@@ -520,18 +594,23 @@ elif step == 3:
     recommended_coverage = total_income * 120
     col1, col2 = st.columns(2)
     with col1:
-        st.radio("Health insurance?", ["Yes", "No"], horizontal=True, key="has_health_insurance")
+        st.session_state.has_health_insurance = st.radio(
+            "Health insurance?", ["Yes", "No"], horizontal=True,
+            index=["Yes", "No"].index(st.session_state.has_health_insurance),
+        )
         if st.session_state.has_health_insurance == "No":
             st.caption("Start with at least ₹10L individual / ₹20L family floater, then adjust by city and family needs.")
     with col2:
-        st.radio("Life insurance (term plan)?", ["Yes", "No"], horizontal=True, key="life_cover_option")
+        st.session_state.life_cover_option = st.radio(
+            "Life insurance (term plan)?", ["Yes", "No"], horizontal=True,
+            index=["Yes", "No"].index(st.session_state.life_cover_option),
+        )
         if st.session_state.life_cover_option == "Yes":
-            st.number_input(
+            st.session_state.life_insurance_coverage = st.number_input(
                 "Sum assured (₹)",
                 min_value=0.0,
                 value=float(st.session_state.life_insurance_coverage or recommended_coverage),
                 step=500000.0,
-                key="life_insurance_coverage",
                 help=f"Benchmark: {inr(recommended_coverage)} (10x annual income)",
             )
         elif st.session_state.dependents > 0:
@@ -552,27 +631,27 @@ elif step == 4:
 
     col1, col2 = st.columns(2)
     with col1:
-        st.selectbox(
+        st.session_state.risk_capacity_score = st.selectbox(
             "Income stability and debt capacity",
             options=[0, 1, 2, 3],
             format_func=lambda x: ["Fragile", "Cautious", "Comfortable", "Very strong"][x],
-            key="risk_capacity_score",
+            index=int(st.session_state.risk_capacity_score),
         )
-        st.selectbox(
+        st.session_state.risk_tolerance_score = st.selectbox(
             "Reaction to a 30% portfolio fall",
             options=[0, 1, 2, 3],
             format_func=lambda x: ["Sell quickly", "Lose sleep", "Stay invested", "Invest more"][x],
-            key="risk_tolerance_score",
+            index=int(st.session_state.risk_tolerance_score),
         )
     with col2:
-        st.selectbox("Tax regime", ["New", "Old"], key="tax_regime")
+        st.session_state.tax_regime = st.selectbox("Tax regime", ["New", "Old"], index=["New", "Old"].index(st.session_state.tax_regime))
         manual_risk = st.radio(
             "Preferred risk profile",
             ["Conservative", "Moderate", "Aggressive"],
             index=["Conservative", "Moderate", "Aggressive"].index(st.session_state.chosen_risk_profile),
             horizontal=True,
-            key="chosen_risk_profile",
         )
+        st.session_state.chosen_risk_profile = manual_risk
 
     capacity_profile = risk_profile_from_score(st.session_state.risk_capacity_score)
     tolerance_profile = risk_profile_from_score(st.session_state.risk_tolerance_score)
@@ -581,8 +660,8 @@ elif step == 4:
     st.success(f"Planner will use: {effective.capitalize()} risk profile")
 
     with st.expander("Advanced assumptions"):
-        st.number_input("Inflation assumption (% p.a.)", min_value=0.0, max_value=12.0, step=0.1, key="inflation_rate_pct")
-        st.number_input("Return adjustment (% p.a.)", min_value=-5.0, max_value=5.0, step=0.25, key="return_adjustment_pct")
+        st.session_state.inflation_rate_pct = st.number_input("Inflation assumption (% p.a.)", min_value=0.0, max_value=12.0, step=0.1, value=float(st.session_state.inflation_rate_pct))
+        st.session_state.return_adjustment_pct = st.number_input("Return adjustment (% p.a.)", min_value=-5.0, max_value=5.0, step=0.25, value=float(st.session_state.return_adjustment_pct))
         st.caption(f"Assumptions last reviewed: {LAST_UPDATED}; effective from {DATA_EFFECTIVE_FROM}.")
         st.markdown("**Selected return assumptions:**")
         st.write(
@@ -600,11 +679,25 @@ elif step == 4:
     with st.expander("Retirement planning inputs"):
         col1, col2 = st.columns(2)
         with col1:
-            st.number_input("Retirement age", min_value=45, max_value=75, key="retirement_age")
-            st.number_input("Life expectancy", min_value=65, max_value=100, key="life_expectancy")
+            st.session_state.retirement_age = st.number_input("Retirement age", min_value=45, max_value=75, value=int(st.session_state.retirement_age))
+            st.session_state.life_expectancy = st.number_input("Life expectancy", min_value=65, max_value=100, value=int(st.session_state.life_expectancy))
         with col2:
-            st.number_input("Monthly retirement expenses in today's ₹", min_value=0.0, step=10000.0, key="retirement_monthly_expenses")
-            st.number_input("Current retirement corpus (₹)", min_value=0.0, step=50000.0, key="retirement_corpus")
+            # Pre-populate retirement expenses from current expenses + inflation if not yet set
+            if st.session_state.retirement_monthly_expenses == 0.0:
+                _years_to_ret = max(0, int(st.session_state.retirement_age) - int(st.session_state.age))
+                _infl = float(st.session_state.inflation_rate_pct) / 100
+                _auto = float(st.session_state.monthly_expenses) * (1 + _infl) ** _years_to_ret
+                st.session_state.retirement_monthly_expenses = round(_auto / 1000) * 1000
+            _ytr = max(0, int(st.session_state.retirement_age) - int(st.session_state.age))
+            _infl_pct = float(st.session_state.inflation_rate_pct)
+            st.session_state.retirement_monthly_expenses = st.number_input(
+                "Monthly retirement expenses (today's ₹)",
+                min_value=0.0,
+                step=5000.0,
+                value=float(st.session_state.retirement_monthly_expenses),
+                help=f"Pre-filled from your current monthly expenses inflated at {_infl_pct:.1f}% p.a. for {_ytr} years. Adjust if your retirement lifestyle will differ."
+            )
+            st.session_state.retirement_corpus = st.number_input("Current retirement corpus (₹)", min_value=0.0, step=50000.0, value=float(st.session_state.retirement_corpus))
 
     col1, col2 = st.columns(2)
     with col1:

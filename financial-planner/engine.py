@@ -4,6 +4,7 @@ India-specific assumptions live in india_profiles.py.
 """
 
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from typing import Optional
 
 from reportlab.lib import colors
@@ -14,6 +15,7 @@ from reportlab.lib.units import mm
 from reportlab.platypus import (
     HRFlowable,
     KeepTogether,
+    PageBreak,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
@@ -623,6 +625,11 @@ RULE = colors.HexColor("#dddddd")
 GREEN = colors.HexColor("#2d7d46")
 AMBER = colors.HexColor("#b45309")
 RED = colors.HexColor("#b91c1c")
+ALT_ROW = colors.HexColor("#f9fafb")
+HDR_BG = colors.HexColor("#e5e7eb")
+SCORE_BG_GOOD = colors.HexColor("#dcfce7")
+SCORE_BG_WARN = colors.HexColor("#fef9c3")
+SCORE_BG_BAD = colors.HexColor("#fee2e2")
 
 
 def score_color(score: int) -> colors.HexColor:
@@ -639,6 +646,141 @@ def score_label(score: int) -> str:
     if score >= 45:
         return "Needs Attention"
     return "At Risk"
+
+
+def _score_bg(score: int, max_score: int) -> colors.Color:
+    pct = score / max_score if max_score > 0 else 0
+    if pct >= 0.70:
+        return SCORE_BG_GOOD
+    if pct >= 0.40:
+        return SCORE_BG_WARN
+    return SCORE_BG_BAD
+
+
+def _score_fg(score: int, max_score: int) -> colors.Color:
+    pct = score / max_score if max_score > 0 else 0
+    if pct >= 0.70:
+        return GREEN
+    if pct >= 0.40:
+        return AMBER
+    return RED
+
+
+def _make_goal_summary_table(recs: list[dict]) -> Table:
+    """One-row-per-goal overview table: name, priority, horizon, targets, SIP, feasibility, split."""
+    headers = ["Goal", "Priority", "Yrs", "Future Target", "Monthly SIP", "Feasible", "Split"]
+    col_w = [44 * mm, 18 * mm, 12 * mm, 28 * mm, 26 * mm, 20 * mm, 26 * mm]
+    rows = [headers]
+    for rec in recs:
+        alloc = rec["allocation"]
+        parts = [f"{alloc['equity'] * 100:.0f}E", f"{alloc['debt'] * 100:.0f}D"]
+        if alloc["gold"] > 0:
+            parts.append(f"{alloc['gold'] * 100:.0f}G")
+        if alloc["cash"] > 0:
+            parts.append(f"{alloc['cash'] * 100:.0f}C")
+        rows.append([
+            rec["name"][:28],
+            rec["priority"].capitalize(),
+            str(rec["years"]),
+            f"Rs.{rec['future_target']:,.0f}",
+            f"Rs.{rec['monthly_needed']:,.0f}",
+            "Yes" if rec["feasible"] else "Stretch",
+            " ".join(parts),
+        ])
+    t = Table(rows, colWidths=col_w)
+    style = [
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("BACKGROUND", (0, 0), (-1, 0), HDR_BG),
+        ("TEXTCOLOR", (0, 0), (-1, 0), DARK),
+        ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+        ("ALIGN", (0, 0), (0, -1), "LEFT"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.5, RULE),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, ALT_ROW]),
+    ]
+    for i, rec in enumerate(recs, start=1):
+        fg = GREEN if rec["feasible"] else AMBER
+        style.extend([
+            ("TEXTCOLOR", (5, i), (5, i), fg),
+            ("FONTNAME", (5, i), (5, i), "Helvetica-Bold"),
+        ])
+    t.setStyle(TableStyle(style))
+    return t
+
+
+def _make_checklist_table(actions: list[dict]) -> Table:
+    """Printable action checklist with Done / Action / Complete By columns."""
+    today = date.today()
+    period_dates = {
+        "Next 30 days": (today + timedelta(days=30)).strftime("%b %d, %Y"),
+        "Next 60 days": (today + timedelta(days=60)).strftime("%b %d, %Y"),
+        "Next 90 days": (today + timedelta(days=90)).strftime("%b %d, %Y"),
+    }
+    col_w = [14 * mm, 126 * mm, 34 * mm]
+    rows = [["Done", "Recommended Action", "Complete By"]]
+    for block in actions:
+        complete_by = period_dates.get(block["period"], "")
+        for item in block["items"]:
+            rows.append(["□", item, complete_by])
+    t = Table(rows, colWidths=col_w)
+    t.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("FONTSIZE", (0, 1), (0, -1), 11),
+        ("BACKGROUND", (0, 0), (-1, 0), HDR_BG),
+        ("TEXTCOLOR", (0, 0), (-1, 0), DARK),
+        ("TEXTCOLOR", (1, 1), (1, -1), MID),
+        ("ALIGN", (0, 0), (0, -1), "CENTER"),
+        ("ALIGN", (2, 0), (2, -1), "CENTER"),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.5, RULE),
+        ("LINEBELOW", (0, 0), (-1, -2), 0.3, colors.HexColor("#e5e7eb")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, ALT_ROW]),
+    ]))
+    return t
+
+
+def _make_debt_table(p: "UserProfile") -> Optional[Table]:
+    """Per-loan table with priority and recommended action. None if no loans."""
+    if not p.loans:
+        return None
+    col_w = [36 * mm, 28 * mm, 16 * mm, 26 * mm, 20 * mm, 48 * mm]
+    rows = [["Loan", "Outstanding", "Rate", "Monthly EMI", "Priority", "Recommended Action"]]
+    for loan in p.loans:
+        is_high = loan.annual_rate >= 0.12
+        rows.append([
+            loan.name[:22],
+            f"Rs.{loan.balance:,.0f}",
+            f"{loan.annual_rate * 100:.1f}%",
+            f"Rs.{loan.monthly_emi:,.0f}",
+            "High" if is_high else "Normal",
+            "Repay before scaling new SIPs" if is_high else "Continue schedule; compare prepayment vs SIP return",
+        ])
+    t = Table(rows, colWidths=col_w)
+    style = [
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("BACKGROUND", (0, 0), (-1, 0), HDR_BG),
+        ("TEXTCOLOR", (0, 0), (-1, 0), DARK),
+        ("ALIGN", (1, 0), (4, -1), "CENTER"),
+        ("ALIGN", (0, 0), (0, -1), "LEFT"),
+        ("ALIGN", (5, 0), (5, -1), "LEFT"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.5, RULE),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, ALT_ROW]),
+    ]
+    for i, loan in enumerate(p.loans, start=1):
+        if loan.annual_rate >= 0.12:
+            style.extend([
+                ("TEXTCOLOR", (4, i), (4, i), RED),
+                ("FONTNAME", (4, i), (4, i), "Helvetica-Bold"),
+            ])
+    t.setStyle(TableStyle(style))
+    return t
 
 
 def S(name, **kw):
@@ -700,151 +842,200 @@ def generate_pdf(
         return f"Rs. {n:,.0f}"
 
     story = []
-    story.append(Paragraph("Personal Financial Plan", S("title", fontName="Helvetica-Bold", fontSize=20, leading=24, alignment=TA_CENTER)))
+
+    # ── Title ──────────────────────────────────────────────────────────────
     story.append(Paragraph(
-        f"Age {p.age} | {p.dependents} dependent(s) | {p.risk_profile.capitalize()} risk profile | {p.tax_regime.capitalize()} tax regime",
+        "Personal Financial Plan",
+        S("title", fontName="Helvetica-Bold", fontSize=20, leading=24, alignment=TA_CENTER),
+    ))
+    story.append(Paragraph(
+        f"Age {p.age}  |  {p.dependents} dependent(s)  |  {p.risk_profile.capitalize()} risk  |  {p.tax_regime.capitalize()} tax regime",
         S("sub", fontSize=9, textColor=MID, alignment=TA_CENTER, spaceAfter=2),
     ))
-    story.append(sp(6))
-
-    total = health["total"]
-    col = score_color(total)
-    story += section("Financial Health Score")
     story.append(Paragraph(
-        f'<font color="{col.hexval()}" size="32"><b>{total}</b></font>'
-        f'<font size="14" color="{col.hexval()}"> / 100 -- {score_label(total)}</font>',
-        S("score", leading=40, spaceBefore=4, spaceAfter=6),
+        f"Generated: {date.today().strftime('%B %d, %Y')}",
+        S("gen", fontSize=8, textColor=LIGHT, alignment=TA_CENTER, spaceAfter=4),
     ))
+    story.append(sp(8))
 
-    maxes = {
-        "emergency_fund": ("Emergency Fund", 20),
-        "savings_rate": ("Savings Rate", 20),
-        "health_insurance": ("Health Insurance", 15),
-        "life_insurance": ("Life Insurance", 15),
-        "goal_feasibility": ("Goal Feasibility", 30),
-    }
-    score_rows = [["Category", "Score", "Max"]]
-    for k, (label, max_v) in maxes.items():
-        score_rows.append([label, str(health["scores"][k]), str(max_v)])
-    t = Table(score_rows, colWidths=[100 * mm, 20 * mm, 20 * mm])
-    t.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("TEXTCOLOR", (0, 0), (-1, 0), DARK),
-        ("TEXTCOLOR", (0, 1), (-1, -1), MID),
-        ("ALIGN", (1, 0), (-1, -1), "CENTER"),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#f9f9f9"), colors.white]),
-        ("LINEBELOW", (0, 0), (-1, 0), 0.5, RULE),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-    ]))
-    story.append(t)
-    for k in maxes:
-        story.append(b(health["details"][k]))
-
-    story += section("Personal Finance Playbook")
-    personality = playbook["personality"]
-    story.append(b(f"{personality['label']}: {personality['summary']} {playbook['one_sentence']}"))
-    for answer in playbook["answers"]:
-        story.append(b(answer))
-    story.append(Paragraph("Tax-smart notes", S("ap", fontName="Helvetica-Bold", fontSize=10, spaceBefore=5)))
-    for note in playbook["tax_notes"][:4]:
-        story.append(b(note))
-    story.append(Paragraph("Debt strategy", S("ap", fontName="Helvetica-Bold", fontSize=10, spaceBefore=5)))
-    story.append(b(playbook["debt_strategy"]["summary"]))
-    for item in playbook["debt_strategy"]["items"][:3]:
-        story.append(b(item))
-    story.append(Paragraph("Avoid for now", S("ap", fontName="Helvetica-Bold", fontSize=10, spaceBefore=5)))
-    for item in playbook["avoid"][:5]:
-        story.append(b(item))
-
-    if gaps:
-        story += section("Action Items")
-        for g in gaps:
-            story.append(b(g))
-
-    story += section("30 / 60 / 90 Day Plan")
-    for block in actions:
-        story.append(Paragraph(block["period"], S("ap", fontName="Helvetica-Bold", fontSize=10, spaceBefore=5)))
-        for item in block["items"]:
-            story.append(b(item))
-
-    story += section("Goal Recommendations")
-    for rec in recs:
-        alloc = rec["allocation"]
-        split = rec["asset_sip_split"]
-        feasibility = "Feasible" if rec["feasible"] else "Stretch -- adjust target, SIP, or timeline"
-        col_hex = GREEN.hexval() if rec["feasible"] else AMBER.hexval()
-        items = [
-            Paragraph(
-                f'<b>{rec["name"]}</b> | {rec["priority"].capitalize()} priority | {rec["years"]} year{"s" if rec["years"] != 1 else ""}',
-                S("gh", fontName="Helvetica-Bold", fontSize=10, spaceBefore=8, spaceAfter=2),
-            ),
-            Paragraph(
-                f'Today target: <b>{rs(rec["today_target"])}</b> | Future target: <b>{rs(rec["future_target"])}</b> | '
-                f'Monthly SIP: <b>{rs(rec["monthly_needed"])}</b> | <font color="{col_hex}">{feasibility}</font>',
-                S("gm", fontSize=9, textColor=MID, spaceAfter=4),
-            ),
-            b(f"Existing investments applied: {rs(rec['existing_applied'])}."),
-            b(f"Strategy: {alloc['label']} -- expected return ~{rec['return'] * 100:.1f}% p.a."),
-            b(
-                f"Monthly split: {rs(split['equity'])} equity, {rs(split['debt'])} debt, "
-                f"{rs(split['gold'])} gold, {rs(split['cash'])} cash/liquid."
-            ),
-            b(
-                f"Allocation: {alloc['equity'] * 100:.0f}% equity, {alloc['debt'] * 100:.0f}% debt, "
-                f"{alloc['gold'] * 100:.0f}% gold, {alloc['cash'] * 100:.0f}% cash/liquid."
-            ),
-        ]
-        guidance = rec.get("fund_category_guidance", {})
-        if guidance:
-            suitable = "; ".join(guidance.get("suitable", [])[:3])
-            caution = "; ".join(guidance.get("use_caution", [])[:2]) or "None for the core plan."
-            avoid = "; ".join(guidance.get("avoid", [])[:3])
-            items.extend([
-                b(f"Suitable categories: {suitable}."),
-                b(f"Use caution: {caution}"),
-                b(f"Avoid: {avoid}."),
-            ])
-        story.append(KeepTogether(items))
-
-    ret = retirement_summary(p)
-    story += section("Retirement Check")
-    story.append(b(f"Estimated retirement corpus need: {rs(ret['corpus_needed'])}."))
-    story.append(b(f"Estimated retirement SIP need: {rs(ret['monthly_needed'])}/month."))
-    story.append(b(f"Estimated monthly expenses at retirement: {rs(ret['monthly_need_at_retirement'])}."))
-
-    story += section("Financial Snapshot")
+    # ── Financial Snapshot ─────────────────────────────────────────────────
     surplus = monthly_surplus(p)
+    story += section("Financial Snapshot")
     snap_rows = [
         ["Monthly income", rs(total_monthly_income(p))],
         ["Monthly expenses", rs(p.monthly_expenses)],
         ["Monthly EMIs", rs(total_monthly_emi(p))],
-        ["Monthly surplus after EMIs", rs(surplus)],
-        ["Total monthly goal SIP needed", rs(total_monthly_needed(recs))],
+        ["Surplus after EMIs", rs(surplus)],
+        ["Total goal SIP needed / month", rs(total_monthly_needed(recs))],
         ["Surplus after goals", rs(max(0, surplus - total_monthly_needed(recs)))],
         ["Savings + emergency fund", rs(p.savings + p.emergency_fund)],
         ["Existing investments", rs(p.existing_investments)],
         ["Debt outstanding", rs(total_debt(p))],
         ["Job-loss buffer", f"{job_loss_buffer_months(p):.1f} months"],
     ]
-    snap = Table(snap_rows, colWidths=[100 * mm, 60 * mm])
+    snap = Table(snap_rows, colWidths=[100 * mm, 74 * mm])
     snap.setStyle(TableStyle([
         ("FONTSIZE", (0, 0), (-1, -1), 9),
         ("TEXTCOLOR", (0, 0), (0, -1), MID),
         ("TEXTCOLOR", (1, 0), (1, -1), DARK),
         ("FONTNAME", (1, 0), (1, -1), "Helvetica-Bold"),
-        ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.HexColor("#f9f9f9"), colors.white]),
+        ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.white, ALT_ROW]),
         ("TOPPADDING", (0, 0), (-1, -1), 4),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]))
     story.append(snap)
+    story.append(sp(6))
 
+    # ── Health Score ───────────────────────────────────────────────────────
+    total = health["total"]
+    col = score_color(total)
+    story += section("Financial Health Score")
+    story.append(Paragraph(
+        f'<font color="{col.hexval()}" size="28"><b>{total}</b></font>'
+        f'<font size="12" color="{col.hexval()}">  /  100  —  {score_label(total)}</font>',
+        S("score", leading=36, spaceBefore=4, spaceAfter=6),
+    ))
+    SCORE_MAXES = [
+        ("emergency_fund", "Emergency Fund", 20),
+        ("savings_rate", "Savings Rate", 20),
+        ("health_insurance", "Health Insurance", 15),
+        ("life_insurance", "Life Insurance", 15),
+        ("goal_feasibility", "Goal Feasibility", 30),
+    ]
+    score_rows = [["Category", "Score", "Max", "Detail"]]
+    for k, label, max_v in SCORE_MAXES:
+        score_rows.append([label, str(health["scores"][k]), str(max_v), health["details"][k]])
+    score_tbl = Table(score_rows, colWidths=[42 * mm, 16 * mm, 14 * mm, 102 * mm])
+    score_style = [
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("BACKGROUND", (0, 0), (-1, 0), HDR_BG),
+        ("TEXTCOLOR", (0, 0), (-1, 0), DARK),
+        ("TEXTCOLOR", (0, 1), (0, -1), MID),
+        ("TEXTCOLOR", (3, 1), (3, -1), MID),
+        ("ALIGN", (1, 0), (2, -1), "CENTER"),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.5, RULE),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, ALT_ROW]),
+    ]
+    for i, (k, _, max_v) in enumerate(SCORE_MAXES, start=1):
+        s = health["scores"][k]
+        score_style.extend([
+            ("BACKGROUND", (1, i), (2, i), _score_bg(s, max_v)),
+            ("TEXTCOLOR", (1, i), (2, i), _score_fg(s, max_v)),
+            ("FONTNAME", (1, i), (1, i), "Helvetica-Bold"),
+        ])
+    score_tbl.setStyle(TableStyle(score_style))
+    story.append(score_tbl)
+    story.append(sp(6))
+
+    # ── Goal Summary ───────────────────────────────────────────────────────
+    if recs:
+        story += section("Goal Summary")
+        story.append(_make_goal_summary_table(recs))
+        story.append(sp(6))
+
+    # ── Action Checklist ───────────────────────────────────────────────────
+    story += section("Action Checklist")
+    story.append(_make_checklist_table(actions))
+    story.append(sp(6))
+
+    # ── Key Warnings ───────────────────────────────────────────────────────
+    if gaps:
+        story += section("Key Warnings")
+        for g in gaps:
+            story.append(b(g))
+        story.append(sp(4))
+
+    # ── Debt Strategy ──────────────────────────────────────────────────────
+    if p.loans:
+        story += section("Debt Strategy")
+        story.append(b(playbook["debt_strategy"]["summary"]))
+        for item in playbook["debt_strategy"]["items"][:2]:
+            story.append(b(item))
+        debt_tbl = _make_debt_table(p)
+        if debt_tbl:
+            story.append(sp(4))
+            story.append(debt_tbl)
+        story.append(sp(4))
+
+    # ── Personal Finance Playbook ──────────────────────────────────────────
+    story += section("Personal Finance Playbook")
+    personality = playbook["personality"]
+    story.append(b(f"{personality['label']}: {personality['summary']} {playbook['one_sentence']}"))
+    for answer in playbook["answers"]:
+        story.append(b(answer))
+    story.append(Paragraph("Tax-smart notes", S("ap", fontName="Helvetica-Bold", fontSize=9.5, spaceBefore=5)))
+    for note in playbook["tax_notes"][:3]:
+        story.append(b(note))
+    story.append(Paragraph("Avoid for now", S("ap", fontName="Helvetica-Bold", fontSize=9.5, spaceBefore=5)))
+    for item in playbook["avoid"][:4]:
+        story.append(b(item))
+    story.append(sp(4))
+
+    # ── Goal Recommendations (detail) — starts on a fresh page ────────────
+    story.append(PageBreak())
+    story += section("Goal Recommendations")
+    for rec in recs:
+        alloc = rec["allocation"]
+        split = rec["asset_sip_split"]
+        feasibility = "Feasible" if rec["feasible"] else "Stretch — adjust target, SIP, or timeline"
+        col_hex = GREEN.hexval() if rec["feasible"] else AMBER.hexval()
+        items = [
+            Paragraph(
+                f'<b>{rec["name"]}</b>  |  {rec["priority"].capitalize()} priority  |  {rec["years"]} year{"s" if rec["years"] != 1 else ""}',
+                S("gh", fontName="Helvetica-Bold", fontSize=10, spaceBefore=8, spaceAfter=2),
+            ),
+            Paragraph(
+                f'Today: <b>{rs(rec["today_target"])}</b>  →  Future: <b>{rs(rec["future_target"])}</b>  |  '
+                f'Monthly SIP: <b>{rs(rec["monthly_needed"])}</b>  |  <font color="{col_hex}">{feasibility}</font>',
+                S("gm", fontSize=9, textColor=MID, spaceAfter=4),
+            ),
+            b(f"Existing investments applied: {rs(rec['existing_applied'])}."),
+            b(f"Strategy: {alloc['label']} — expected return ~{rec['return'] * 100:.1f}% p.a."),
+            b(
+                f"Monthly split: {rs(split['equity'])} equity  /  {rs(split['debt'])} debt  /  "
+                f"{rs(split['gold'])} gold  /  {rs(split['cash'])} cash/liquid."
+            ),
+        ]
+        guidance = rec.get("fund_category_guidance", {})
+        if guidance:
+            suitable = "; ".join(guidance.get("suitable", [])[:3])
+            avoid_items = "; ".join(guidance.get("avoid", [])[:2])
+            items.extend([
+                b(f"Suitable: {suitable}."),
+                b(f"Avoid: {avoid_items}."),
+            ])
+        scen = rec["scenarios"]
+        items.append(b(
+            f"Scenarios: conservative {rs(scen['conservative'])}  /  base {rs(scen['base'])}  /  optimistic {rs(scen['optimistic'])}."
+        ))
+        if not rec["feasible"]:
+            trade = rec["tradeoffs"]
+            items.append(b(
+                f"Trade-offs: extend 2 yrs → {rs(trade['extend_by_2_years'])}/mo;  "
+                f"reduce target 10% → {rs(trade['reduce_target_10pct'])}/mo."
+            ))
+        story.append(KeepTogether(items))
+
+    # ── Retirement Check ───────────────────────────────────────────────────
+    story += section("Retirement Check")
+    ret = retirement_summary(p)
+    story.append(b(f"Years to retirement: {ret['years_to_retirement']}."))
+    story.append(b(f"Estimated corpus needed: {rs(ret['corpus_needed'])}."))
+    story.append(b(f"Monthly retirement SIP needed: {rs(ret['monthly_needed'])}."))
+    story.append(b(f"Estimated monthly expenses at retirement: {rs(ret['monthly_need_at_retirement'])}."))
+
+    # ── Assumptions & Guardrails ───────────────────────────────────────────
     story += section("Assumptions and Guardrails")
     story.append(b(f"Assumptions last reviewed: {LAST_UPDATED}; effective from {DATA_EFFECTIVE_FROM}."))
-    story.append(b(f"Inflation assumption: {p.inflation_rate * 100:.1f}% p.a.; return adjustment: {p.return_adjustment * 100:+.1f}% p.a."))
-    story.append(b(f"Key tax notes: {TAX_NOTES['equity_ltcg']} {TAX_NOTES['debt_mf']}"))
-    story.append(b("This app does not know your full tax status, liabilities, employer benefits, health conditions, existing asset allocation, or legal obligations."))
+    story.append(b(f"Inflation: {p.inflation_rate * 100:.1f}% p.a.; return adjustment: {p.return_adjustment * 100:+.1f}% p.a."))
+    story.append(b(f"Tax notes: {TAX_NOTES['equity_ltcg']} {TAX_NOTES['debt_mf']}"))
+    story.append(b(
+        "This app does not know your full tax status, liabilities, employer benefits, health conditions, "
+        "existing asset allocation, or legal obligations."
+    ))
     story.append(b("Consult a SEBI-registered investment adviser before making investment decisions."))
     for source in DATA_SOURCES:
         story.append(b(source))
