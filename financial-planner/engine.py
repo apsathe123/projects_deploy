@@ -39,6 +39,21 @@ RISK_ORDER = {"conservative": 0, "moderate": 1, "aggressive": 2}
 PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 
+def _inr(n: float) -> str:
+    """Indian number formatting: Rs.1,00,000 not Rs.100,000."""
+    sign = "-" if n < 0 else ""
+    whole = int(round(abs(n)))
+    if whole < 1000:
+        return f"Rs.{sign}{whole}"
+    last3 = whole % 1000
+    rest = whole // 1000
+    parts = [f"{last3:03d}"]
+    while rest:
+        parts.append(f"{rest % 100:02d}" if rest >= 100 else str(rest))
+        rest //= 100
+    return f"Rs.{sign}{','.join(reversed(parts))}"
+
+
 @dataclass
 class Goal:
     name: str
@@ -83,6 +98,9 @@ class UserProfile:
     life_expectancy: int = 85
     retirement_monthly_expenses: float = 0.0
     retirement_corpus: float = 0.0
+    epf_balance: float = 0.0
+    ppf_balance: float = 0.0
+    nps_balance: float = 0.0
 
 
 def monthly_investment_needed(
@@ -325,7 +343,7 @@ def debt_strategy(p: UserProfile) -> dict:
         items.append("Avoid taking new debt for discretionary goals until the emergency fund is at least 3 months.")
     elif high_debt > 0:
         summary = "High-interest debt is the first money leak to close."
-        items.append(f"Prioritise repayment of about Rs.{high_debt:,.0f} before scaling low-priority equity SIPs.")
+        items.append(f"Prioritise repayment of about {_inr(high_debt)} before scaling low-priority equity SIPs.")
         items.append("Use an avalanche order: highest interest rate first, while keeping minimum EMIs current on every loan. If motivation matters more than math, the snowball method (smallest balance first) builds momentum faster.")
     elif emi_ratio > 0.35:
         summary = "EMIs are taking a large share of income, so flexibility is tight."
@@ -412,7 +430,7 @@ def personal_finance_playbook(
     if needed <= max(0, surplus):
         answers.append("Are my SIPs enough? Yes, based on current assumptions and entered goals.")
     else:
-        answers.append(f"Are my SIPs enough? Not yet; the current plan is short by about Rs.{needed - max(0, surplus):,.0f}/month.")
+        answers.append(f"Are my SIPs enough? Not yet; the current plan is short by about {_inr(needed - max(0, surplus))}/month.")
     if high_interest_debt(p) > 0:
         answers.append("Should I invest before debt repayment? Keep only essential SIPs; expensive debt gets priority.")
     elif p.emergency_fund < (p.monthly_expenses + total_monthly_emi(p)) * 3:
@@ -453,21 +471,31 @@ def compute_health_score(p: UserProfile, recs: list[dict] | None = None) -> dict
         details["emergency_fund"] = "No emergency fund. This is your first priority."
 
     savings_rate = surplus / income if income > 0 else 0
-    if savings_rate >= 0.20:
+    # Age-adjusted benchmarks: younger investors get more slack, older need to save harder
+    if p.age <= 30:
+        thresholds = (0.15, 0.10, 0.05, 0.02)
+        age_note = "Under 30: building phase"
+    elif p.age <= 45:
+        thresholds = (0.20, 0.15, 0.10, 0.05)
+        age_note = "30–45: peak accumulation"
+    else:
+        thresholds = (0.25, 0.20, 0.15, 0.10)
+        age_note = "45+: acceleration needed"
+    if savings_rate >= thresholds[0]:
         scores["savings_rate"] = 20
-        details["savings_rate"] = f"{savings_rate:.0%} savings rate after EMIs. Excellent discipline."
-    elif savings_rate >= 0.15:
+        details["savings_rate"] = f"{savings_rate:.0%} savings rate after EMIs. Excellent for your age ({age_note})."
+    elif savings_rate >= thresholds[1]:
         scores["savings_rate"] = 15
-        details["savings_rate"] = f"{savings_rate:.0%} savings rate after EMIs. Good; push toward 20%."
-    elif savings_rate >= 0.10:
+        details["savings_rate"] = f"{savings_rate:.0%} savings rate after EMIs. Good ({age_note}); push toward {thresholds[0]:.0%}."
+    elif savings_rate >= thresholds[2]:
         scores["savings_rate"] = 10
-        details["savings_rate"] = f"{savings_rate:.0%} savings rate after EMIs. Acceptable, with room to improve."
-    elif savings_rate >= 0.05:
+        details["savings_rate"] = f"{savings_rate:.0%} savings rate after EMIs. Acceptable ({age_note}), room to improve."
+    elif savings_rate >= thresholds[3]:
         scores["savings_rate"] = 5
-        details["savings_rate"] = f"{savings_rate:.0%} savings rate after EMIs. Low; review expenses."
+        details["savings_rate"] = f"{savings_rate:.0%} savings rate after EMIs. Low for your age ({age_note}); review expenses."
     else:
         scores["savings_rate"] = 0
-        details["savings_rate"] = f"{savings_rate:.0%} savings rate after EMIs. Cash flow needs attention."
+        details["savings_rate"] = f"{savings_rate:.0%} savings rate after EMIs. Cash flow needs attention ({age_note})."
 
     if p.has_health_insurance:
         scores["health_insurance"] = 15
@@ -489,10 +517,10 @@ def compute_health_score(p: UserProfile, recs: list[dict] | None = None) -> dict
     elif p.life_insurance_coverage >= recommended_coverage * 0.5:
         shortfall = recommended_coverage - p.life_insurance_coverage
         scores["life_insurance"] = 8
-        details["life_insurance"] = f"Life cover is partial. Increase by Rs.{shortfall:,.0f}."
+        details["life_insurance"] = f"Life cover is partial. Increase by {_inr(shortfall)}."
     else:
         scores["life_insurance"] = 0
-        details["life_insurance"] = f"{p.dependents} dependent(s) need stronger protection. Recommended cover: Rs.{recommended_coverage:,.0f}."
+        details["life_insurance"] = f"{p.dependents} dependent(s) need stronger protection. Recommended cover: {_inr(recommended_coverage)}."
 
     if recs is None:
         recs = goal_recommendations(p)
@@ -544,20 +572,20 @@ def gap_analysis(p: UserProfile) -> list[str]:
         months = p.emergency_fund / fixed_outflow if fixed_outflow > 0 else 0
         needed = fixed_outflow * 3 - p.emergency_fund
         critical.append(
-            f"Emergency fund covers {months:.1f} months. Build at least 3 months by adding Rs.{needed:,.0f} "
+            f"Emergency fund covers {months:.1f} months. Build at least 3 months by adding {_inr(needed)} "
             "to a liquid fund, overnight fund, or savings account."
         )
 
     if high_interest_debt(p) > 0:
         high.append(
-            f"High-interest debt outstanding: Rs.{high_interest_debt(p):,.0f}. Route spare cash toward repayment "
+            f"High-interest debt outstanding: {_inr(high_interest_debt(p))}. Route spare cash toward repayment "
             "before starting or scaling discretionary equity SIPs."
         )
 
     if p.dependents > 0 and p.life_insurance_coverage < recommended_coverage and p.savings + p.existing_investments < recommended_coverage:
         shortfall = recommended_coverage - max(p.life_insurance_coverage, 0)
         high.append(
-            f"Increase term life cover by about Rs.{shortfall:,.0f}. Prefer a pure term plan and avoid mixing "
+            f"Increase term life cover by about {_inr(shortfall)}. Prefer a pure term plan and avoid mixing "
             "insurance with investments."
         )
 
@@ -572,6 +600,18 @@ def gap_analysis(p: UserProfile) -> list[str]:
             "80C or 80CCD deductions unless your tax setup allows them."
         )
 
+    # F7: Goal realism check — warn if a goal requires saving more than annual income
+    annual_income = income * 12
+    if annual_income > 0:
+        for g in p.goals:
+            ft = goal_future_target(g, p)
+            ratio = ft / annual_income
+            if g.years <= 5 and ratio > 5:
+                medium.append(
+                    f'Goal "{g.name}" ({_inr(ft)} in {g.years} years) is {ratio:.0f}x your annual income. '
+                    f"Consider extending the timeline or revising the target to keep the plan realistic."
+                )
+
     return critical + high + medium
 
 
@@ -584,7 +624,7 @@ def action_plan(p: UserProfile, recs: list[dict], gaps: list[str]) -> list[dict]
     plan = []
     first_steps = []
     if ef_gap > 0:
-        first_steps.append(f"Move Rs.{min(surplus, ef_gap):,.0f}/month toward the emergency fund.")
+        first_steps.append(f"Move {_inr(min(surplus, ef_gap))}/month toward the emergency fund.")
     if not p.has_health_insurance:
         first_steps.append("Shortlist and buy health insurance before adding new risky investments.")
     if high_interest_debt(p) > 0:
@@ -597,7 +637,7 @@ def action_plan(p: UserProfile, recs: list[dict], gaps: list[str]) -> list[dict]
     if p.dependents > 0 and p.life_insurance_coverage < total_monthly_income(p) * 120:
         second_steps.append("Close the term-insurance shortfall.")
     if top_goal:
-        second_steps.append(f"Set up the first automated SIP for {top_goal['name']}: Rs.{top_goal['monthly_needed']:,.0f}/month.")
+        second_steps.append(f"Set up the first automated SIP for {top_goal['name']}: {_inr(top_goal['monthly_needed'])}/month.")
     if p.tax_regime == "old":
         second_steps.append("Review PPF/ELSS/NPS usage against remaining 80C and 80CCD room.")
     else:
@@ -607,7 +647,7 @@ def action_plan(p: UserProfile, recs: list[dict], gaps: list[str]) -> list[dict]
     third_steps = []
     if recs:
         total_needed = sum(r["monthly_needed"] for r in recs)
-        third_steps.append(f"Review whether total goal SIPs of Rs.{total_needed:,.0f}/month fit comfortably.")
+        third_steps.append(f"Review whether total goal SIPs of {_inr(total_needed)}/month fit comfortably.")
         third_steps.append("Rebalance goal allocations once a year or when income changes materially.")
     third_steps.append("Update this plan after any job, EMI, family, or tax-regime change.")
     plan.append({"period": "Next 90 days", "items": third_steps})
@@ -654,7 +694,9 @@ def retirement_summary(p: UserProfile) -> dict:
         monthly_need_at_retirement, retirement_years, p.inflation_rate, withdrawal_return
     )
     annual_return = adjusted_return(get_allocation(max(1, years_to_retirement), p.risk_profile)["return"], p)
-    monthly_needed = monthly_investment_needed(corpus_needed, max(1, years_to_retirement), annual_return, p.retirement_corpus)
+    # Total existing retirement corpus: explicit + EPF + PPF + NPS
+    total_existing = p.retirement_corpus + p.epf_balance + p.ppf_balance + p.nps_balance
+    monthly_needed = monthly_investment_needed(corpus_needed, max(1, years_to_retirement), annual_return, total_existing)
     return {
         "years_to_retirement": years_to_retirement,
         "retirement_years": retirement_years,
@@ -662,6 +704,7 @@ def retirement_summary(p: UserProfile) -> dict:
         "corpus_needed": corpus_needed,
         "monthly_needed": monthly_needed,
         "withdrawal_return": withdrawal_return,
+        "total_existing_corpus": total_existing,
     }
 
 
@@ -729,8 +772,8 @@ def _make_goal_summary_table(recs: list[dict]) -> Table:
             rec["name"][:28],
             rec["priority"].capitalize(),
             str(rec["years"]),
-            f"Rs.{rec['future_target']:,.0f}",
-            f"Rs.{rec['monthly_needed']:,.0f}",
+            _inr(rec['future_target']),
+            _inr(rec['monthly_needed']),
             "Yes" if rec["feasible"] else "Stretch",
             " ".join(parts),
         ])
@@ -800,9 +843,9 @@ def _make_debt_table(p: "UserProfile") -> Optional[Table]:
         is_high = loan.annual_rate >= 0.12
         rows.append([
             loan.name[:22],
-            f"Rs.{loan.balance:,.0f}",
+            _inr(loan.balance),
             f"{loan.annual_rate * 100:.1f}%",
-            f"Rs.{loan.monthly_emi:,.0f}",
+            _inr(loan.monthly_emi),
             "High" if is_high else "Normal",
             "Repay before scaling new SIPs" if is_high else "Continue schedule; compare prepayment vs SIP return",
         ])
@@ -886,7 +929,7 @@ def generate_pdf(
     )
 
     def rs(n):
-        return f"Rs. {n:,.0f}"
+        return _inr(n)
 
     story = []
 

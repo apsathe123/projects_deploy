@@ -81,7 +81,19 @@ def inr(n: float) -> str:
         return f"₹{n / 1e7:.2f} Cr"
     if abs(n) >= 1e5:
         return f"₹{n / 1e5:.1f} L"
-    return f"₹{n:,.0f}"
+    # Indian grouping: ₹1,00,000 not ₹100,000
+    sign = "-" if n < 0 else ""
+    n = abs(n)
+    whole = int(round(n))
+    if whole < 1000:
+        return f"₹{sign}{whole}"
+    last3 = whole % 1000
+    rest = whole // 1000
+    parts = [f"{last3:03d}"]
+    while rest:
+        parts.append(f"{rest % 100:02d}" if rest >= 100 else str(rest))
+        rest //= 100
+    return f"₹{sign}{','.join(reversed(parts))}"
 
 
 def truncate(text: str, max_len: int = 42) -> str:
@@ -130,6 +142,9 @@ def serializable_state() -> dict:
         "life_expectancy",
         "retirement_monthly_expenses",
         "retirement_corpus",
+        "epf_balance",
+        "ppf_balance",
+        "nps_balance",
     ]
     return {
         "fields": {k: st.session_state.get(k) for k in keys if k in st.session_state},
@@ -183,6 +198,9 @@ def _all_field_defaults() -> dict:
         "life_expectancy": 85,
         "retirement_monthly_expenses": 0.0,
         "retirement_corpus": 0.0,
+        "epf_balance": 0.0,
+        "ppf_balance": 0.0,
+        "nps_balance": 0.0,
         "goals": [],
         "loans": [],
         "plan": None,
@@ -368,7 +386,7 @@ def build_profile() -> UserProfile:
         Loan(
             name=l["name"],
             balance=float(l.get("balance", 0.0)),
-            annual_rate=float(l.get("annual_rate", 0.0)) / 100,
+            annual_rate=float(l.get("annual_rate", 0.0)),
             monthly_emi=float(l.get("monthly_emi", 0.0)),
         )
         for l in st.session_state.loans
@@ -401,6 +419,9 @@ def build_profile() -> UserProfile:
         life_expectancy=int(st.session_state.life_expectancy),
         retirement_monthly_expenses=float(st.session_state.retirement_monthly_expenses),
         retirement_corpus=float(st.session_state.retirement_corpus),
+        epf_balance=float(st.session_state.epf_balance),
+        ppf_balance=float(st.session_state.ppf_balance),
+        nps_balance=float(st.session_state.nps_balance),
     )
 
 
@@ -414,6 +435,7 @@ STEP_KEYS: dict[int, list[str]] = {
         "chosen_risk_profile", "effective_risk_profile",
         "inflation_rate_pct", "return_adjustment_pct",
         "retirement_age", "life_expectancy", "retirement_monthly_expenses", "retirement_corpus",
+        "epf_balance", "ppf_balance", "nps_balance",
     ],
     5: ["goals"],
     6: ["plan"],
@@ -608,14 +630,15 @@ elif step == 2:
             with col2:
                 st.session_state.loans[i]["balance"] = st.number_input("Outstanding (₹)", min_value=0.0, value=float(loan.get("balance", 0.0)), step=10000.0, key=f"loan_bal_{i}")
             with col3:
-                st.session_state.loans[i]["annual_rate"] = st.number_input("Interest % p.a.", min_value=0.0, value=float(loan.get("annual_rate", 12.0)), step=0.5, key=f"loan_rate_{i}")
+                _rate_pct = st.number_input("Interest % p.a.", min_value=0.0, value=float(loan.get("annual_rate", 0.12)) * 100, step=0.5, key=f"loan_rate_{i}")
+                st.session_state.loans[i]["annual_rate"] = _rate_pct / 100
             with col4:
                 st.session_state.loans[i]["monthly_emi"] = st.number_input("Monthly EMI (₹)", min_value=0.0, value=float(loan.get("monthly_emi", 0.0)), step=1000.0, key=f"loan_emi_{i}")
             if st.button("Remove loan", key=f"remove_loan_{i}"):
                 st.session_state.loans.pop(i)
                 st.rerun()
     if st.button("+ Add loan"):
-        st.session_state.loans.append({"name": "Credit card / loan", "balance": 100000.0, "annual_rate": 18.0, "monthly_emi": 5000.0})
+        st.session_state.loans.append({"name": "Credit card / loan", "balance": 100000.0, "annual_rate": 0.18, "monthly_emi": 5000.0})
         st.rerun()
 
     profile_preview = build_profile()
@@ -725,7 +748,10 @@ elif step == 4:
         col1, col2 = st.columns(2)
         with col1:
             st.session_state.retirement_age = st.number_input("Retirement age", min_value=45, max_value=75, value=int(st.session_state.retirement_age))
-            st.session_state.life_expectancy = st.number_input("Life expectancy", min_value=65, max_value=100, value=int(st.session_state.life_expectancy))
+            st.session_state.life_expectancy = st.number_input(
+                "Life expectancy", min_value=65, max_value=100, value=int(st.session_state.life_expectancy),
+                help="India's average is ~70, but for financial planning you should plan for living longer. 85 covers the 90th percentile — running out of money is worse than having extra.",
+            )
         with col2:
             # Pre-populate retirement expenses from current expenses + inflation if not yet set
             if st.session_state.retirement_monthly_expenses == 0.0:
@@ -742,7 +768,16 @@ elif step == 4:
                 value=float(st.session_state.retirement_monthly_expenses),
                 help=f"Pre-filled from your current monthly expenses inflated at {_infl_pct:.1f}% p.a. for {_ytr} years. Adjust if your retirement lifestyle will differ."
             )
-            st.session_state.retirement_corpus = st.number_input("Current retirement corpus (₹)", min_value=0.0, step=50000.0, value=float(st.session_state.retirement_corpus))
+            st.session_state.retirement_corpus = st.number_input("Other retirement corpus (₹)", min_value=0.0, step=50000.0, value=float(st.session_state.retirement_corpus), help="Investments already earmarked for retirement (excluding EPF/PPF/NPS below).")
+        st.markdown("**Existing retirement balances**")
+        st.caption("These reduce the monthly SIP needed for retirement.")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.session_state.epf_balance = st.number_input("EPF balance (₹)", min_value=0.0, step=50000.0, value=float(st.session_state.epf_balance), help="Check your EPFO passbook or recent payslip.")
+        with col2:
+            st.session_state.ppf_balance = st.number_input("PPF balance (₹)", min_value=0.0, step=50000.0, value=float(st.session_state.ppf_balance))
+        with col3:
+            st.session_state.nps_balance = st.number_input("NPS balance (₹)", min_value=0.0, step=50000.0, value=float(st.session_state.nps_balance))
 
     col1, col2 = st.columns(2)
     with col1:
