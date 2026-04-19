@@ -112,6 +112,17 @@ def get_field(key, cast=float):
         return DEFAULTS.get(key, 0)
 
 
+def get_form_field(key, cast=float, default=0):
+    """Safely extract and cast a form value, returning default on bad input."""
+    val = request.form.get(key)
+    if val is None:
+        return default
+    try:
+        return cast(val)
+    except (ValueError, TypeError):
+        return default
+
+
 def ensure_session():
     for key, val in DEFAULTS.items():
         if key not in session:
@@ -201,8 +212,8 @@ def index():
 def about():
     ensure_session()
     if request.method == "POST":
-        session["age"] = int(request.form.get("age", 22))
-        session["dependents"] = int(request.form.get("dependents", 0))
+        session["age"] = get_form_field("age", int, 22)
+        session["dependents"] = get_form_field("dependents", int, 0)
         session["is_student"] = "is_student" in request.form
         return redirect(url_for("money"))
     return render_template("step_about.html", s=session)
@@ -212,9 +223,9 @@ def about():
 def money():
     ensure_session()
     if request.method == "POST":
-        session["monthly_income"] = float(request.form.get("monthly_income", 0))
-        session["other_income"] = float(request.form.get("other_income", 0))
-        session["monthly_expenses"] = float(request.form.get("monthly_expenses", 0))
+        session["monthly_income"] = get_form_field("monthly_income")
+        session["other_income"] = get_form_field("other_income")
+        session["monthly_expenses"] = get_form_field("monthly_expenses")
         return redirect(url_for("assets"))
     return render_template("step_money.html", s=session)
 
@@ -223,9 +234,9 @@ def money():
 def assets():
     ensure_session()
     if request.method == "POST":
-        session["savings"] = float(request.form.get("savings", 0))
-        session["emergency_fund"] = float(request.form.get("emergency_fund", 0))
-        session["existing_investments"] = float(request.form.get("existing_investments", 0))
+        session["savings"] = get_form_field("savings")
+        session["emergency_fund"] = get_form_field("emergency_fund")
+        session["existing_investments"] = get_form_field("existing_investments")
         session["investment_type"] = request.form.get("investment_type", "None")
         # Parse loans from form
         loans = []
@@ -233,9 +244,9 @@ def assets():
         while f"loan_name_{i}" in request.form:
             loans.append({
                 "name": request.form.get(f"loan_name_{i}", "Loan"),
-                "balance": float(request.form.get(f"loan_balance_{i}", 0)),
-                "annual_rate": float(request.form.get(f"loan_rate_{i}", 0)) / 100,
-                "monthly_emi": float(request.form.get(f"loan_emi_{i}", 0)),
+                "balance": get_form_field(f"loan_balance_{i}"),
+                "annual_rate": get_form_field(f"loan_rate_{i}") / 100,
+                "monthly_emi": get_form_field(f"loan_emi_{i}"),
             })
             i += 1
         session["loans"] = loans
@@ -249,7 +260,7 @@ def protect():
     if request.method == "POST":
         session["has_health_insurance"] = "has_health_insurance" in request.form
         session["life_cover_option"] = "life_cover_option" in request.form
-        session["life_insurance_coverage"] = float(request.form.get("life_insurance_coverage", 0))
+        session["life_insurance_coverage"] = get_form_field("life_insurance_coverage")
         return redirect(url_for("risk"))
     return render_template("step_protect.html", s=session)
 
@@ -258,18 +269,18 @@ def protect():
 def risk():
     ensure_session()
     if request.method == "POST":
-        session["risk_capacity_score"] = int(request.form.get("risk_capacity_score", 2))
-        session["risk_tolerance_score"] = int(request.form.get("risk_tolerance_score", 2))
+        session["risk_capacity_score"] = get_form_field("risk_capacity_score", int, 2)
+        session["risk_tolerance_score"] = get_form_field("risk_tolerance_score", int, 2)
         session["tax_regime"] = request.form.get("tax_regime", "new")
         session["chosen_risk_profile"] = request.form.get("chosen_risk_profile", "aggressive")
-        session["retirement_age"] = int(request.form.get("retirement_age", 60))
-        session["life_expectancy"] = int(request.form.get("life_expectancy", 85))
-        session["retirement_monthly_expenses"] = float(request.form.get("retirement_monthly_expenses", 0))
-        session["retirement_corpus"] = float(request.form.get("retirement_corpus", 0))
-        session["inflation_rate_pct"] = float(request.form.get("inflation_rate_pct", 5.5))
-        session["epf_balance"] = float(request.form.get("epf_balance", 0))
-        session["ppf_balance"] = float(request.form.get("ppf_balance", 0))
-        session["nps_balance"] = float(request.form.get("nps_balance", 0))
+        session["retirement_age"] = get_form_field("retirement_age", int, 60)
+        session["life_expectancy"] = get_form_field("life_expectancy", int, 85)
+        session["retirement_monthly_expenses"] = get_form_field("retirement_monthly_expenses")
+        session["retirement_corpus"] = get_form_field("retirement_corpus")
+        session["inflation_rate_pct"] = get_form_field("inflation_rate_pct", float, 5.5)
+        session["epf_balance"] = get_form_field("epf_balance")
+        session["ppf_balance"] = get_form_field("ppf_balance")
+        session["nps_balance"] = get_form_field("nps_balance")
         return redirect(url_for("goals"))
     age = get_field("age", int)
     age_risk = suggested_risk_profile(age)
@@ -284,18 +295,25 @@ def goals():
         if action == "next":
             return redirect(url_for("plan"))
         elif action.startswith("add_suggested_"):
-            idx = int(action.split("_")[-1])
-            sg = SUGGESTED_GOALS[idx]
-            g_list = session.get("goals", [])
-            if not any(g["name"] == sg["name"] for g in g_list):
-                g_list.append({"name": sg["name"], "target": sg["target"], "years": sg["years"], "priority": sg["priority"]})
-                session["goals"] = g_list
+            try:
+                idx = int(action.split("_")[-1])
+            except (ValueError, TypeError):
+                idx = -1
+            if 0 <= idx < len(SUGGESTED_GOALS):
+                sg = SUGGESTED_GOALS[idx]
+                g_list = session.get("goals", [])
+                if not any(g["name"] == sg["name"] for g in g_list):
+                    g_list.append({"name": sg["name"], "target": sg["target"], "years": sg["years"], "priority": sg["priority"]})
+                    session["goals"] = g_list
         elif action == "add_custom":
             g_list = session.get("goals", [])
             g_list.append({"name": "My goal", "target": 20000, "years": 1, "priority": "Medium"})
             session["goals"] = g_list
         elif action.startswith("remove_"):
-            idx = int(action.split("_")[-1])
+            try:
+                idx = int(action.split("_")[-1])
+            except (ValueError, TypeError):
+                idx = -1
             g_list = session.get("goals", [])
             if 0 <= idx < len(g_list):
                 g_list.pop(idx)
@@ -306,8 +324,8 @@ def goals():
             while f"goal_name_{i}" in request.form:
                 g_list.append({
                     "name": request.form.get(f"goal_name_{i}", "Goal"),
-                    "target": float(request.form.get(f"goal_target_{i}", 20000)),
-                    "years": int(request.form.get(f"goal_years_{i}", 1)),
+                    "target": get_form_field(f"goal_target_{i}", float, 20000),
+                    "years": get_form_field(f"goal_years_{i}", int, 1),
                     "priority": request.form.get(f"goal_priority_{i}", "Medium"),
                 })
                 i += 1
@@ -323,6 +341,15 @@ def plan():
     if not session.get("goals"):
         flash("Add at least one goal first.")
         return redirect(url_for("goals"))
+    if get_field("monthly_income") <= 0 and get_field("other_income") <= 0:
+        flash("Enter your income before generating a plan.")
+        return redirect(url_for("money"))
+    if get_field("retirement_age", int) <= get_field("age", int):
+        flash("Retirement age must be greater than your current age.")
+        return redirect(url_for("risk"))
+    if get_field("life_expectancy", int) <= get_field("retirement_age", int):
+        flash("Life expectancy must be greater than retirement age.")
+        return redirect(url_for("risk"))
 
     profile = build_profile()
     recs = goal_recommendations(profile)
